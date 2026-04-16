@@ -1,0 +1,6 @@
+@GuideManagement.Api_HostAddress = http://localhost:5157
+
+GET {{GuideManagement.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

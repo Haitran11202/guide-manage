@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Guide Database - Admin Management</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@300;400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#1D3663", // Deep Blue
+                        "accent": "#F3796A",  // Coral/Orange
+                        "background-light": "#F5F5F5", // Light Grey for secondary bg
+                        "background-dark": "#0F172A",
+                        "border-light": "#E5E7EB", // Light Grey for borders
+                        "text-main": "#000000",    // Black for primary text
+                    },
+                    fontFamily: {
+                        "display": ["Public Sans"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Public Sans', sans-serif; color: #000000; }
+        .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+        .active-icon { font-variation-settings: 'FILL' 1; }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark text-text-main dark:text-slate-100 transition-colors duration-200">
+<div class="flex h-screen overflow-hidden">
+<!-- Sidebar -->
+<aside class="w-64 border-r border-border-light dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col">
+<div class="p-6 border-b border-border-light dark:border-slate-800 flex items-center gap-3">
+<div class="bg-primary p-2 rounded-lg">
+<span class="material-symbols-outlined text-white">database</span>
+</div>
+<h2 class="text-xl font-bold tracking-tight text-primary dark:text-slate-100">GuideDB</h2>
+</div>
+<nav class="flex-1 p-4 flex flex-col gap-2 overflow-y-auto">
+<div class="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">Management</div>
+<a class="flex items-center gap-3 px-3 py-2 rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="text-sm font-medium">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-xl bg-primary/10 text-primary" href="#">
+<span class="material-symbols-outlined active-icon">group</span>
+<span class="text-sm font-medium">Guides</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" href="#">
+<span class="material-symbols-outlined">badge</span>
+<span class="text-sm font-medium">Clients</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" href="#">
+<span class="material-symbols-outlined">calendar_month</span>
+<span class="text-sm font-medium">Schedules</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" href="#">
+<span class="material-symbols-outlined">bar_chart_4_bars</span>
+<span class="text-sm font-medium">Reports</span>
+</a>
+<div class="mt-6 px-3 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">System</div>
+<a class="flex items-center gap-3 px-3 py-2 rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="text-sm font-medium">Settings</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" href="#">
+<span class="material-symbols-outlined">help</span>
+<span class="text-sm font-medium">Support</span>
+</a>
+</nav>
+<div class="p-4 border-t border-border-light dark:border-slate-800">
+<div class="flex items-center gap-3">
+<img alt="Admin avatar" class="size-10 rounded-full border-2 border-primary/20" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDLRZAfHy2aMT_6AV1D5vrCQhI2JUBNj8ySgB2xlzK1u1TSqCJN863WNdu7MRqbKyHiV1VPFLB0SRthz3Hb84lpUo7e0KpmqnBSuEz_OQLwH-DRwQ99C0UizFbJP46Wou6YBHuO5AFsdUEe892QllKb6fQD_b94OQjSsKsEDBiVkoFehqytPaUL6U3ByIxVDfOT-_4WbbPmNISTewHUSR-1PeqO7ed17SbCMGVxV4ttsE0lRKiyGd_EYRWiF0diS9M1L_LBdiiVV4Mh"/>
+<div class="flex-1 overflow-hidden">
+<p class="text-sm font-bold truncate text-text-main">Admin User</p>
+<p class="text-xs text-slate-500 truncate">admin@guidedb.com</p>
+</div>
+<span class="material-symbols-outlined text-slate-400 text-sm cursor-pointer hover:text-primary transition-colors">logout</span>
+</div>
+</div>
+</aside>
+<!-- Main Content -->
+<main class="flex-1 flex flex-col min-w-0 bg-background-light dark:bg-background-dark overflow-hidden">
+<!-- Header -->
+<header class="h-16 border-b border-border-light dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center justify-between px-8 z-10 shrink-0">
+<div class="flex items-center gap-4 flex-1">
+<div class="max-w-md w-full relative">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">search</span>
+<input class="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-xl pl-10 py-2 text-sm focus:ring-2 focus:ring-primary/50 text-text-main dark:text-slate-100" placeholder="Search guides by name, tag or status..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<button class="relative p-2 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-1.5 right-1.5 w-2 h-2 bg-accent rounded-full ring-2 ring-white dark:ring-slate-900"></span>
+</button>
+<button class="p-2 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg">
+<span class="material-symbols-outlined">dark_mode</span>
+</button>
+</div>
+</header>
+<!-- Page Content -->
+<div class="flex-1 p-6 flex flex-col gap-6 overflow-hidden">
+<!-- Table Header Section -->
+<div class="flex flex-wrap items-end justify-between gap-4 shrink-0">
+<div>
+<h1 class="text-3xl font-black text-text-main dark:text-slate-100 tracking-tight">Guide Directory</h1>
+<p class="text-slate-500 dark:text-slate-400 mt-1">Manage and monitor 42 active guide entries in the system.</p>
+</div>
+<div class="flex gap-3">
+<button class="flex items-center gap-2 px-4 py-2 border border-border-light dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 text-sm font-semibold hover:bg-slate-50 transition-colors text-text-main dark:text-slate-200">
+<span class="material-symbols-outlined text-sm">filter_list</span>
+                        Filter
+                    </button>
+<button class="flex items-center gap-2 px-4 py-2 bg-accent text-white rounded-xl text-sm font-bold shadow-lg shadow-accent/20 hover:bg-accent/90 transition-all">
+<span class="material-symbols-outlined text-sm">person_add</span>
+                        Add New Guide
+                    </button>
+</div>
+</div>
+<!-- Table Container -->
+<div class="flex-1 overflow-hidden rounded-xl border border-border-light dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm flex flex-col">
+<div class="overflow-x-auto overflow-y-auto flex-1 @container">
+<table class="w-full text-left border-collapse min-w-[1000px]">
+<thead class="sticky top-0 z-20 bg-slate-50 dark:bg-slate-800/50 backdrop-blur-md">
+<tr>
+<th class="px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-border-light dark:border-slate-800">Name</th>
+<th class="px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-border-light dark:border-slate-800">Client Tags</th>
+<th class="px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-border-light dark:border-slate-800">Status</th>
+<th class="px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-border-light dark:border-slate-800">Part-time</th>
+<th class="px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-border-light dark:border-slate-800">Rating</th>
+<th class="px-6 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-border-light dark:border-slate-800 text-right">Details</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-border-light dark:divide-slate-800 text-text-main dark:text-slate-100">
+<!-- Entry 1 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Alex Rivera</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Adventure</span>
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Hiking</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">No</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 90%"></div>
+</div>
+<span class="text-xs font-bold">90</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 2 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Sarah Chen</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Cultural</span>
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Foodie</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">Yes</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 95%"></div>
+</div>
+<span class="text-xs font-bold">95</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 3 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Marcus Thorne</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">History</span>
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Urban</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span> Inactive
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">No</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 82%"></div>
+</div>
+<span class="text-xs font-bold">82</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 4 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Elena Gomez</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Nature</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">No</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 88%"></div>
+</div>
+<span class="text-xs font-bold">88</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 5 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Jordan Smith</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Luxury</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">Yes</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 92%"></div>
+</div>
+<span class="text-xs font-bold">92</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 6 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Maya Patel</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Wellness</span>
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Yoga</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">No</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 94%"></div>
+</div>
+<span class="text-xs font-bold">94</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 7 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Liam O'Connor</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Heritage</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">Yes</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 86%"></div>
+</div>
+<span class="text-xs font-bold">86</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 8 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Sophie Dupont</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Art</span>
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">History</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span> Inactive
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">No</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 91%"></div>
+</div>
+<span class="text-xs font-bold">91</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 9 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Carlos Mendez</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Surfing</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">No</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 89%"></div>
+</div>
+<span class="text-xs font-bold">89</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 10 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Anna Weber</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Cycling</span>
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Nature</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">Yes</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 93%"></div>
+</div>
+<span class="text-xs font-bold">93</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 11 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Hassan Ali</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Photography</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">No</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 87%"></div>
+</div>
+<span class="text-xs font-bold">87</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 12 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Isabella Rossi</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Architecture</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span> Inactive
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">No</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 84%"></div>
+</div>
+<span class="text-xs font-bold">84</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 13 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">David Kim</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Street Food</span>
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Urban</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">Yes</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 96%"></div>
+</div>
+<span class="text-xs font-bold">96</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 14 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Rachel Green</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Fashion</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">No</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 88%"></div>
+</div>
+<span class="text-xs font-bold">88</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+<!-- Entry 15 -->
+<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="px-6 py-3 font-semibold text-sm">Tom Wilson</td>
+<td class="px-6 py-3">
+<div class="flex flex-wrap gap-1">
+<span class="px-2 py-0.5 rounded-lg bg-accent text-white text-[11px] font-bold uppercase">Wildlife</span>
+</div>
+</td>
+<td class="px-6 py-3">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Active
+                                </span>
+</td>
+<td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">No</td>
+<td class="px-6 py-3">
+<div class="flex items-center gap-2">
+<div class="w-24 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+<div class="bg-primary h-full" style="width: 90%"></div>
+</div>
+<span class="text-xs font-bold">90</span>
+</div>
+</td>
+<td class="px-6 py-3 text-right">
+<a class="text-primary hover:text-accent text-xs font-bold tracking-wide transition-colors" href="#">VIEW PROFILE</a>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Pagination Footer -->
+<div class="p-4 bg-white dark:bg-slate-900 border-t border-border-light dark:border-slate-800 flex items-center justify-between shrink-0">
+<p class="text-xs font-medium text-slate-500">Showing 1 to 15 of 42 entries</p>
+<nav class="flex items-center gap-1">
+<button class="size-8 flex items-center justify-center rounded-lg border border-border-light dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500 disabled:opacity-50" disabled="">
+<span class="material-symbols-outlined text-sm">chevron_left</span>
+</button>
+<button class="size-8 flex items-center justify-center rounded-lg bg-primary text-white text-xs font-bold">1</button>
+<button class="size-8 flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium text-text-main dark:text-slate-300">2</button>
+<button class="size-8 flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium text-text-main dark:text-slate-300">3</button>
+<button class="size-8 flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium text-text-main dark:text-slate-300">4</button>
+<button class="size-8 flex items-center justify-center rounded-lg border border-border-light dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-500">
+<span class="material-symbols-outlined text-sm">chevron_right</span>
+</button>
+</nav>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

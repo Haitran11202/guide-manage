@@ -1,0 +1,1949 @@
+import { useState, useMemo, useEffect, useRef } from "react";
+import { Link, useLocation } from "react-router";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Star,
+  LayoutDashboard,
+  Users,
+  Calendar,
+  Plus,
+  X,
+  AlertCircle,
+  ChevronDown,
+  Filter,
+  ZoomIn,
+  UserCheck,
+  Briefcase,
+  History,
+  PlaneLanding,
+  Pencil,
+  Clock3,
+} from "lucide-react";
+import { buildGuideEmailKey, mockApi } from "../mock/api";
+import { TimelineBookingAssignmentModal } from "../components/timeline/TimelineBookingAssignmentModal";
+import { TimelineBookingsTab } from "../components/timeline/TimelineBookingsTab";
+import type { GuideEmailRecord, GuideTimeException, ServiceDayPart } from "../mock/types";
+
+type Booking = {
+  id: string;
+  ref: string;
+  startDay: string;
+  duration: number;
+  client: string;
+  groupName: string;
+  tourName?: string;
+  status: string;
+  assignedGuides: string[];
+  confirmedGuides: string[];
+  country?: string;
+};
+
+type BusyDate = {
+  id: string;
+  from: string;
+  to: string;
+};
+
+type Guide = {
+  id: number;
+  name: string;
+  tags: string[];
+  busyDates: BusyDate[];
+  timeExceptions: GuideTimeException[];
+};
+
+type GuideTimeRangeDraft = {
+  date: string;
+  startHour: string;
+  endHour: string;
+};
+
+type GuideTimingModalState = {
+  mode: "edit-assigned" | "select-assignment";
+  guideId: number;
+  guideName: string;
+  bookingId: string;
+  title: string;
+  submitLabel: string;
+  description: string;
+  drafts: GuideTimeRangeDraft[];
+} | null;
+
+type PendingGuideStatusChange = {
+  bookingId: string;
+  bookingRef: string;
+  guideName: string;
+  isConfirmed: boolean;
+} | null;
+
+type EmailComposerState = {
+  bookingId: string;
+  bookingRef: string;
+  guideId: number;
+  guideName: string;
+  date: string;
+  subject: string;
+  body: string;
+  actionLabel?: "draft" | "sent";
+} | null;
+
+// --- Helper Functions ---
+
+const checkOverlap = (start1: number, end1: number, start2: number, end2: number) => {
+  return start1 <= end2 && end1 >= start2;
+};
+
+const formatHour = (value: number) => `${value.toString().padStart(2, "0")}:00`;
+
+const formatHourRange = (startHour: number, endHour: number) => `${formatHour(startHour)} - ${formatHour(endHour)}`;
+
+const toDateKey = (value: Date) => value.toISOString().split("T")[0];
+
+const getSeriesName = (groupName: string) => {
+  if (!groupName) return "NO SERIES";
+  if (groupName.includes("AJJR")) return "AJJR";
+  if (groupName.includes("LEUJ")) return "LEUJ";
+  if (groupName.includes("HM")) return "HM";
+  if (groupName.includes("LEJH")) return "LEJH";
+  if (groupName.includes("AJBR")) return "AJBR";
+  return "NO SERIES";
+};
+
+const getDynamicallyCalculatedStatus = (guide: any, targetIntervals: { start: number, end: number }[], itemAssignments: Record<string, number>) => {
+  for (const b of guide.busyDates) {
+    const bStartMs = new Date(`${b.from}T00:00:00`).getTime();
+    const bEndMs = new Date(`${b.to}T00:00:00`).getTime();
+    if (targetIntervals.some(ti => checkOverlap(ti.start, ti.end, bStartMs, bEndMs))) {
+      return { label: "Busy", color: "text-red-600" };
+    }
+  }
+
+  for (const t of guide.tours) {
+    if (t.status?.toLowerCase() === "cancelled") continue;
+
+    let hasAnyAssignmentForBooking = false;
+    let hasDetailedAssignmentsForThisGuide = false;
+    let assignedDays = new Set<number>();
+
+    Object.entries(itemAssignments).forEach(([itemId, gId]) => {
+      if (itemId.startsWith(`${t.id}-`)) {
+        hasAnyAssignmentForBooking = true;
+        if (gId === guide.id) {
+          hasDetailedAssignmentsForThisGuide = true;
+          const match = itemId.match(/-d(\d+)-/);
+          if (match) assignedDays.add(parseInt(match[1], 10));
+        }
+      }
+    });
+
+    if (hasAnyAssignmentForBooking) {
+      if (hasDetailedAssignmentsForThisGuide && assignedDays.size > 0) {
+        for (const day of assignedDays) {
+          const dS = new Date(`${t.startDay}T00:00:00`);
+          dS.setDate(dS.getDate() + (day - 1));
+          const dayMs = dS.getTime();
+          if (targetIntervals.some(ti => checkOverlap(ti.start, ti.end, dayMs, dayMs))) {
+            return { label: "On Tour", color: "text-[#1D3663]" };
+          }
+        }
+      }
+    } else {
+      const tourStartMs = new Date(`${t.startDay}T00:00:00`).getTime();
+      const tourEndMs = tourStartMs + (t.duration - 1) * 86400000;
+      if (targetIntervals.some(ti => checkOverlap(ti.start, ti.end, tourStartMs, tourEndMs))) {
+        return { label: "On Tour", color: "text-[#1D3663]" };
+      }
+    }
+  }
+  return { label: "Available", color: "text-[#1D3663]" };
+};
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const GUIDES_PER_PAGE = 20;
+
+export function Timeline() {
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  const queryTab = searchParams.get("tab");
+  const queryGuideId = Number(searchParams.get("guideId"));
+  const queryYear = Number(searchParams.get("year"));
+
+  const [activeTab, setActiveTab] = useState<'calendar' | 'bookings'>(
+    queryTab === "bookings" ? "bookings" : "calendar"
+  );
+
+  useEffect(() => {
+    if (queryTab === "bookings") setActiveTab("bookings");
+    else if (queryTab === "calendar") setActiveTab("calendar");
+  }, [queryTab]);
+
+  useEffect(() => {
+    if (!Number.isNaN(queryYear) && queryYear > 0) {
+      setCurrentYear(queryYear);
+    }
+  }, [queryYear]);
+
+  const [zoomLevel, setZoomLevel] = useState<1 | 2 | 3>(3);
+  const [currentYear, setCurrentYear] = useState(2026);
+  const [guidePage, setGuidePage] = useState(1);
+  const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const lastTimelineScrollLeftRef = useRef<number | null>(null);
+
+  const [visibleDateStart, setVisibleDateStart] = useState("");
+  const [visibleDateEnd, setVisibleDateEnd] = useState("");
+
+  const [filterGuide, setFilterGuide] = useState("");
+  const [filterSearch, setFilterSearch] = useState("");
+  const [filterClient, setFilterClient] = useState("");
+  const [filterCountry, setFilterCountry] = useState("");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterSeries, setFilterSeries] = useState<"all" | "series" | "noseries">("all");
+
+  const [modalSearchTerm, setModalSearchTerm] = useState("");
+  const [modalFilterCountry, setModalFilterCountry] = useState("");
+  const [modalFilterClient, setModalFilterClient] = useState("");
+  const [modalFilterGuide, setModalFilterGuide] = useState("");
+  const [modalFilterDateFrom, setModalFilterDateFrom] = useState("");
+  const [modalFilterDateTo, setModalFilterDateTo] = useState("");
+  const [modalFilterSeries, setModalFilterSeries] = useState<"all" | "series" | "noseries">("all");
+
+  const [hoveredSeries, setHoveredSeries] = useState<string | null>(null);
+
+  const [bookingsData, setBookingsData] = useState<Booking[]>([]);
+  const [guidesData, setGuidesData] = useState<Guide[]>([]);
+  const [itemAssignments, setItemAssignments] = useState<Record<string, number>>({});
+  const [itemTimeSlots, setItemTimeSlots] = useState<Record<string, ServiceDayPart>>({});
+  const [emailRecords, setEmailRecords] = useState<Record<string, GuideEmailRecord>>({});
+  const [guideTimingModalState, setGuideTimingModalState] = useState<GuideTimingModalState>(null);
+  const timelineRequestRef = useRef(0);
+
+  const applyTimelineData = (data: {
+    bookingsData: Booking[];
+    guidesData: Guide[];
+    itemAssignments: Record<string, number>;
+    itemTimeSlots: Record<string, ServiceDayPart>;
+    emailRecords: Record<string, GuideEmailRecord>;
+    guideTimeExceptions: GuideTimeException[];
+  }) => {
+    setBookingsData(data.bookingsData);
+    setGuidesData(data.guidesData);
+    setItemAssignments(data.itemAssignments);
+    setItemTimeSlots(data.itemTimeSlots);
+    setEmailRecords(data.emailRecords);
+  };
+
+  const [pendingGuideStatusChange, setPendingGuideStatusChange] = useState<PendingGuideStatusChange>(null);
+  const [emailComposerState, setEmailComposerState] = useState<EmailComposerState>(null);
+
+  const fetchTimelineData = async (range?: { from?: string; to?: string }) => {
+    const requestId = timelineRequestRef.current + 1;
+    timelineRequestRef.current = requestId;
+    const data = await mockApi.getTimelineData(range);
+    if (timelineRequestRef.current === requestId) {
+      applyTimelineData(data);
+    }
+    return data;
+  };
+
+  const allCountries = useMemo(() => {
+    const countries = new Set<string>();
+    bookingsData.forEach((b) => {
+      if (b.country) {
+        b.country.split(',').forEach(c => countries.add(c.trim()));
+      }
+    });
+    return Array.from(countries).sort();
+  }, [bookingsData]);
+
+  const allClients = useMemo(() => {
+    const clients = new Set<string>();
+    bookingsData.forEach((b) => {
+      if (b.client) clients.add(b.client);
+    });
+    return Array.from(clients).sort();
+  }, [bookingsData]);
+
+  const guidesWithTours = useMemo(() => {
+    return guidesData.map((g) => {
+      const activeTours = bookingsData.filter((b) => b.assignedGuides.includes(g.name));
+      return { ...g, tours: activeTours };
+    });
+  }, [guidesData, bookingsData]);
+
+  useEffect(() => {
+    if (Number.isNaN(queryGuideId) || queryGuideId <= 0) {
+      if (queryTab === "calendar") {
+        setFilterGuide("");
+        setGuidePage(1);
+      }
+      return;
+    }
+
+    const guideName = guidesData.find((guide) => guide.id === queryGuideId)?.name;
+    if (guideName) {
+      setFilterGuide(guideName);
+      setGuidePage(1);
+    }
+  }, [guidesData, queryGuideId, queryTab]);
+
+  const filteredGuidesList = useMemo(() => {
+    return guidesWithTours.filter((g) => {
+      if (filterGuide && !g.name.toLowerCase().includes(filterGuide.toLowerCase())) return false;
+      if (filterSearch || filterClient || filterCountry || filterDateFrom || filterDateTo || filterSeries !== "all") {
+        const hasMatchingTour = g.tours.some((t: any) => {
+          const matchSearch = filterSearch ? (t.ref.toLowerCase().includes(filterSearch.toLowerCase()) || t.groupName.toLowerCase().includes(filterSearch.toLowerCase())) : true;
+          const matchClient = filterClient ? t.client.toLowerCase().includes(filterClient.toLowerCase()) : true;
+          const matchCountry = filterCountry ? t.country?.toLowerCase().includes(filterCountry.toLowerCase()) : true;
+
+          const sName = getSeriesName(t.groupName);
+          const isSeriesTour = sName !== "NO SERIES";
+          const matchSeries = filterSeries === "series" ? isSeriesTour : filterSeries === "noseries" ? !isSeriesTour : true;
+
+          let matchDate = true;
+          if (filterDateFrom || filterDateTo) {
+            const tStart = new Date(`${t.startDay}T00:00:00`).getTime();
+            const tEnd = tStart + (t.duration - 1) * 86400000;
+            if (filterDateFrom && filterDateTo) {
+              const fStart = new Date(`${filterDateFrom}T00:00:00`).getTime();
+              const fEnd = new Date(`${filterDateTo}T00:00:00`).getTime();
+              matchDate = tStart <= fEnd && tEnd >= fStart;
+            } else if (filterDateFrom) {
+              matchDate = tEnd >= new Date(`${filterDateFrom}T00:00:00`).getTime();
+            } else if (filterDateTo) {
+              matchDate = tStart <= new Date(`${filterDateTo}T00:00:00`).getTime();
+            }
+          }
+          return matchSearch && matchClient && matchCountry && matchDate && matchSeries;
+        });
+        if (!hasMatchingTour) return false;
+      }
+      return true;
+    });
+  }, [guidesWithTours, filterGuide, filterSearch, filterClient, filterCountry, filterDateFrom, filterDateTo, filterSeries]);
+
+  const paginatedGuides = useMemo(() => filteredGuidesList.slice((guidePage - 1) * GUIDES_PER_PAGE, guidePage * GUIDES_PER_PAGE), [filteredGuidesList, guidePage]);
+  const totalGuidePages = Math.max(1, Math.ceil(filteredGuidesList.length / GUIDES_PER_PAGE));
+
+  const [expandedSeries, setExpandedSeries] = useState<Set<string>>(new Set());
+  const [activeAssignmentBooking, setActiveAssignmentBooking] = useState<any | null>(null);
+
+  const [guideDetailsModalId, setGuideDetailsModalId] = useState<number | null>(null);
+  const [detailsModalYear, setDetailsModalYear] = useState(new Date().getFullYear());
+  const [guideOverviewFilter, setGuideOverviewFilter] = useState<'total' | 'finished' | 'incoming'>('total');
+
+  const [newBusyFrom, setNewBusyFrom] = useState("");
+  const [newBusyTo, setNewBusyTo] = useState("");
+  const [pendingDeleteBusyId, setPendingDeleteBusyId] = useState<string | null>(null);
+  const [pendingDeleteBusyGuideId, setPendingDeleteBusyGuideId] = useState<number | null>(null);
+
+  const [selectedItemsToAssign, setSelectedItemsToAssign] = useState<Set<string>>(new Set());
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragMode, setDragMode] = useState<"add" | "remove" | null>(null);
+
+  const [showGuideSelector, setShowGuideSelector] = useState(false);
+  const [selectedGuideId, setSelectedGuideId] = useState<number | null>(null);
+  const [guideSearchTerm, setGuideSearchTerm] = useState("");
+
+  const [showUnassignDialog, setShowUnassignDialog] = useState(false);
+  const [pendingUnassignGuide, setPendingUnassignGuide] = useState<string | null>(null);
+
+  const getStatusBadge = (status: string) => {
+    switch (status.toLowerCase()) {
+      case "confirmed": case "paid": case "book": case "booked":
+        return <span className="text-[#1D3663] font-bold uppercase text-[10px] tracking-widest">Confirmed</span>;
+      case "requested": case "on request":
+        return <span className="text-[#F3796A] font-bold uppercase text-[10px] tracking-widest">On Request</span>;
+      case "cancelled": case "canceled":
+        return <span className="text-[#1D3663]/45 font-bold uppercase text-[10px] tracking-widest line-through">Cancelled</span>;
+      default:
+        return <span className="text-[#1D3663]/70 font-bold uppercase text-[10px] tracking-widest">{status}</span>;
+    }
+  };
+
+  const isCancelledEvent = (event: any) => event.type === "tour" && event.data?.status?.toLowerCase() === "cancelled";
+
+  const getEventBarClasses = (event: any) => {
+    if (event.type === "busy") return "bg-violet-500 border border-slate-600 text-white";
+    if (isCancelledEvent(event)) return "bg-white border border-[#1D3663]/20";
+    return event.guideStatus === "confirmed" ? "bg-[#1D3663]" : "bg-[#F3796A]";
+  };
+
+  const yearStartMs = useMemo(() => new Date(currentYear, 0, 1).getTime(), [currentYear]);
+  const yearEndMs = useMemo(() => new Date(currentYear + 1, 0, 1).getTime(), [currentYear]);
+  const totalDaysInYear = useMemo(() => Math.round((yearEndMs - yearStartMs) / 86400000), [yearEndMs, yearStartMs]);
+
+  const allDaysInYear = useMemo(() => {
+    const days = [];
+    for (let m = 0; m < 12; m++) {
+      const daysInMonth = new Date(currentYear, m + 1, 0).getDate();
+      for (let d = 1; d <= daysInMonth; d++) days.push(new Date(currentYear, m, d));
+    }
+    return days;
+  }, [currentYear]);
+
+  const isDaily = zoomLevel === 3;
+  const currentCellWidth = zoomLevel === 3 ? 40 : 20;
+
+  const timelineTrackStyle = useMemo(() => {
+    if (zoomLevel === 1) return { flex: 1, minWidth: "800px" };
+    if (zoomLevel === 2) return { width: "250vw", flexShrink: 0 };
+    return { width: `${totalDaysInYear * currentCellWidth}px`, flexShrink: 0 };
+  }, [zoomLevel, totalDaysInYear, currentCellWidth]);
+
+  useEffect(() => {
+    const syncVisibleRange = (force = false) => {
+      const container = timelineScrollRef.current;
+      if (!container) return;
+
+      const scrollLeft = container.scrollLeft;
+      if (!force && lastTimelineScrollLeftRef.current === scrollLeft) {
+        return;
+      }
+
+      lastTimelineScrollLeftRef.current = scrollLeft;
+      const clientWidth = container.clientWidth;
+
+      const leftIndex = Math.floor(scrollLeft / currentCellWidth);
+      const rightIndex = Math.floor((scrollLeft + clientWidth - 260) / currentCellWidth);
+
+      const safeLeftIndex = Math.max(0, Math.min(allDaysInYear.length - 1, leftIndex));
+      const safeRightIndex = Math.max(0, Math.min(allDaysInYear.length - 1, rightIndex));
+
+      const formatDate = (date: Date) => {
+        if (!date) return "";
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, "0");
+        const d = String(date.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      };
+
+      setVisibleDateStart(formatDate(allDaysInYear[safeLeftIndex]));
+      setVisibleDateEnd(formatDate(allDaysInYear[safeRightIndex]));
+    };
+
+    const container = timelineScrollRef.current;
+    if (container && isDaily) {
+      syncVisibleRange(true);
+      const handleScroll = () => syncVisibleRange();
+      container.addEventListener('scroll', handleScroll);
+      return () => {
+        container.removeEventListener('scroll', handleScroll);
+      };
+    }
+  }, [zoomLevel, currentYear, allDaysInYear, currentCellWidth, isDaily]);
+
+  useEffect(() => {
+    if (isDaily) {
+      return;
+    }
+
+    const from = `${currentYear}-01-01`;
+    const to = `${currentYear}-12-31`;
+    void fetchTimelineData({ from, to });
+  }, [currentYear, isDaily]);
+
+  useEffect(() => {
+    if (!isDaily || !visibleDateStart || !visibleDateEnd) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void fetchTimelineData({ from: visibleDateStart, to: visibleDateEnd });
+    }, 200);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isDaily, visibleDateStart, visibleDateEnd]);
+
+  const getSeriesStats = (bookingsInSeries: Booking[]) => {
+    const total = bookingsInSeries.length;
+    const assigned = bookingsInSeries.filter((b) => b.assignedGuides.length > 0).length;
+    return {
+      total, assigned, notAssigned: total - assigned,
+      cancelled: bookingsInSeries.filter(b => b.status.toLowerCase().includes("cancel")).length,
+      onRequest: bookingsInSeries.filter(b => b.status.toLowerCase().includes("request")).length,
+      confirmed: bookingsInSeries.filter(b => ["confirmed", "paid", "book", "booked"].includes(b.status.toLowerCase())).length,
+    };
+  };
+
+  const groupedBySeries = useMemo(() => {
+    const term = modalSearchTerm.toLowerCase();
+    const filtered = bookingsData.filter((b) => {
+      const matchSearch = term ? (b.ref.toLowerCase().includes(term) || b.groupName.toLowerCase().includes(term)) : true;
+      const matchCountry = modalFilterCountry ? b.country?.toLowerCase().includes(modalFilterCountry.toLowerCase()) : true;
+      const matchClient = modalFilterClient ? b.client?.toLowerCase().includes(modalFilterClient.toLowerCase()) : true;
+      const matchGuide = modalFilterGuide ? b.assignedGuides.some(g => g.toLowerCase().includes(modalFilterGuide.toLowerCase())) : true;
+
+      const sName = getSeriesName(b.groupName);
+      const isSeriesTour = sName !== "NO SERIES";
+      const matchSeries = modalFilterSeries === "series" ? isSeriesTour : modalFilterSeries === "noseries" ? !isSeriesTour : true;
+
+      let matchDate = true;
+      if (modalFilterDateFrom || modalFilterDateTo) {
+        const bStart = new Date(`${b.startDay}T00:00:00`).getTime();
+        const bEnd = bStart + (b.duration - 1) * 86400000;
+        if (modalFilterDateFrom && modalFilterDateTo) {
+          const fStart = new Date(`${modalFilterDateFrom}T00:00:00`).getTime();
+          const fEnd = new Date(`${modalFilterDateTo}T00:00:00`).getTime();
+          matchDate = bStart <= fEnd && bEnd >= fStart;
+        } else if (modalFilterDateFrom) {
+          matchDate = bEnd >= new Date(`${modalFilterDateFrom}T00:00:00`).getTime();
+        } else if (modalFilterDateTo) {
+          matchDate = bStart <= new Date(`${modalFilterDateTo}T00:00:00`).getTime();
+        }
+      }
+
+      return matchSearch && matchCountry && matchClient && matchGuide && matchDate && matchSeries;
+    });
+
+    const grouped: Record<string, Booking[]> = {};
+    filtered.forEach((b) => {
+      let series = getSeriesName(b.groupName);
+      if (!grouped[series]) grouped[series] = [];
+      grouped[series].push(b);
+    });
+    Object.keys(grouped).forEach((s) => grouped[s].sort((a, b) => new Date(a.startDay).getTime() - new Date(b.startDay).getTime()));
+    return grouped;
+  }, [bookingsData, modalSearchTerm, modalFilterCountry, modalFilterClient, modalFilterGuide, modalFilterDateFrom, modalFilterDateTo, modalFilterSeries]);
+
+  const toggleSeriesAccordion = (series: string) => {
+    setExpandedSeries((prev) => { const next = new Set(prev); if (next.has(series)) next.delete(series); else next.add(series); return next; });
+  };
+
+  const dailyColumns = useMemo(() => {
+    if (!activeAssignmentBooking) return [];
+    const days = [];
+    let current = new Date(`${activeAssignmentBooking.startDay}T00:00:00`);
+    for (let i = 0; i < activeAssignmentBooking.duration; i++) {
+      const dateStr = current.toISOString().split("T")[0];
+      const dayNum = i + 1;
+      const bId = activeAssignmentBooking.id;
+
+      const items = [
+        { id: `${bId}-d${dayNum}-hd`, type: "TYO\HD Guide" },
+        { id: `${bId}-d${dayNum}-lunch`, type: "TYO\Lunch for Guide in a local restaurant near the city's river" }
+      ];
+
+      if (i !== activeAssignmentBooking.duration - 1) {
+        items.push({ id: `${bId}-d${dayNum}-dinner`, type: "TYO\\Dinner for Guide" });
+      }
+
+      if (i === 0 || i === activeAssignmentBooking.duration - 1) {
+        items.push({ id: `${bId}-d${dayNum}-trf`, type: "TYOAirport Transfer Guide" });
+      }
+
+      const enrichedItems = items.map((item) => {
+        const assignedGuideId = itemAssignments[item.id];
+        const assignedGuideName = assignedGuideId ? guidesData.find((g) => g.id === assignedGuideId)?.name : null;
+        const slot = itemTimeSlots[item.id] ?? "full-day";
+        return { ...item, assignedGuideName, slot };
+      });
+      const firstGuide = enrichedItems[0]?.assignedGuideName;
+      const isAllSameGuide = enrichedItems.length > 0 && firstGuide && enrichedItems.every((item) => item.assignedGuideName === firstGuide);
+      days.push({ dayNum, dateStr, items: enrichedItems, isAllSameGuide, dayGuideName: isAllSameGuide ? firstGuide : null });
+      current.setDate(current.getDate() + 1);
+    }
+    return days;
+  }, [activeAssignmentBooking, itemAssignments, itemTimeSlots, guidesData]);
+
+  const handleItemMouseDown = (itemId: string) => {
+    setIsDragging(true); const mode = selectedItemsToAssign.has(itemId) ? "remove" : "add";
+    setDragMode(mode); setSelectedItemsToAssign(prev => { const next = new Set(prev); mode === "add" ? next.add(itemId) : next.delete(itemId); return next; });
+  };
+
+  const handleItemMouseEnter = (itemId: string) => {
+    if (!isDragging || !dragMode) return;
+    setSelectedItemsToAssign(prev => { const next = new Set(prev); dragMode === "add" ? next.add(itemId) : next.delete(itemId); return next; });
+  };
+
+  const handleSelectAll = () => {
+    if (!activeAssignmentBooking) return;
+    const allItemIds = dailyColumns.flatMap((d: any) => d.items.map((i: any) => i.id));
+    setSelectedItemsToAssign(selectedItemsToAssign.size === allItemIds.length ? new Set() : new Set(allItemIds));
+  };
+
+  const handleSelectDay = (dayNum: number) => {
+    const dayItemIds = dailyColumns.find((d: any) => d.dayNum === dayNum)?.items.map((i: any) => i.id) || [];
+    const allDaySelected = dayItemIds.every((id: string) => selectedItemsToAssign.has(id));
+    setSelectedItemsToAssign(prev => { const next = new Set(prev); dayItemIds.forEach((id: string) => allDaySelected ? next.delete(id) : next.add(id)); return next; });
+  };
+
+  useEffect(() => {
+    const handleGlobalMouseUp = () => { setIsDragging(false); setDragMode(null); };
+    window.addEventListener("mouseup", handleGlobalMouseUp);
+    return () => window.removeEventListener("mouseup", handleGlobalMouseUp);
+  }, []);
+
+  const handleAddBusyDate = async () => {
+    const targetGuide = guidesWithTours.find(g => g.id === guideDetailsModalId);
+    if (!newBusyFrom || !newBusyTo || !targetGuide) return;
+    const newBusyFromMs = new Date(newBusyFrom).getTime();
+    const newBusyToMs = new Date(newBusyTo).getTime();
+    if (newBusyFromMs > newBusyToMs) { alert("From date must be before To date."); return; }
+
+    const overlappingBusyBlock = targetGuide.busyDates.find((busyDate) => {
+      const busyFromMs = new Date(`${busyDate.from}T00:00:00`).getTime();
+      const busyToMs = new Date(`${busyDate.to}T00:00:00`).getTime();
+      return checkOverlap(newBusyFromMs, newBusyToMs, busyFromMs, busyToMs);
+    });
+    if (overlappingBusyBlock) {
+      alert("This busy block overlaps with an existing busy block. Please choose another date range.");
+      return;
+    }
+
+    let overlappingTour: Booking | null = null;
+    for (const t of targetGuide.tours) {
+      if (t.status?.toLowerCase() === "cancelled") continue;
+      const tourStartMs = new Date(t.startDay).getTime();
+      const tourEndMs = tourStartMs + (t.duration - 1) * 86400000;
+      if (checkOverlap(newBusyFromMs, newBusyToMs, tourStartMs, tourEndMs)) { overlappingTour = t; break; }
+    }
+    if (overlappingTour) { alert(`The guide is already on tour for "${overlappingTour.groupName}" on some of those dates. You cannot add a busy block.`); return; }
+
+    const nextTimelineData = await mockApi.addGuideBusyDate(guideDetailsModalId, newBusyFrom, newBusyTo);
+    applyTimelineData(nextTimelineData);
+    setNewBusyFrom(""); setNewBusyTo("");
+  };
+
+  const handleRemoveBusyDate = (id: string, guideId: number) => { setPendingDeleteBusyId(id); setPendingDeleteBusyGuideId(guideId); };
+
+  const handleConfirmUnassignGuide = async () => {
+    if (!activeAssignmentBooking || !pendingUnassignGuide) return;
+    const nextTimelineData = await mockApi.unassignGuideFromBooking(activeAssignmentBooking.id, pendingUnassignGuide);
+    applyTimelineData(nextTimelineData);
+    const updatedBooking = nextTimelineData.bookingsData.find((booking) => booking.id === activeAssignmentBooking.id) ?? null;
+    setActiveAssignmentBooking(updatedBooking);
+    setPendingUnassignGuide(null); setShowUnassignDialog(false);
+  };
+
+  const filteredGuidesForModal = useMemo(() => {
+    if (!guideSearchTerm.trim()) return guidesWithTours.slice(0, 30);
+    const term = guideSearchTerm.toLowerCase();
+    return guidesWithTours.filter((g: any) => g.name.toLowerCase().includes(term) || g.tags.some((t: string) => t.toLowerCase().includes(term))).slice(0, 30);
+  }, [guideSearchTerm, guidesWithTours]);
+
+  const expandServiceDayPart = (slot: ServiceDayPart) =>
+    slot === "full-day" ? ["morning", "afternoon", "evening"] : [slot];
+
+  const formatServiceDayPartLabel = (slot: string) => {
+    if (slot === "evening") return "Evening";
+    return slot.charAt(0).toUpperCase() + slot.slice(1);
+  };
+
+  const getDatesForItemIds = (bookingStartDay: string, itemIds: string[]) => {
+    const dates = new Set<string>();
+    itemIds.forEach((itemId) => {
+      const match = itemId.match(/-d(\d+)-/);
+      if (!match) return;
+      const date = new Date(`${bookingStartDay}T00:00:00`);
+      date.setDate(date.getDate() + (Number(match[1]) - 1));
+      dates.add(toDateKey(date));
+    });
+    return Array.from(dates).sort();
+  };
+
+  const getTargetItemIds = () =>
+    selectedItemsToAssign.size > 0
+      ? Array.from(selectedItemsToAssign)
+      : dailyColumns.flatMap((day: any) => day.items.map((item: any) => item.id));
+
+  const getGuideAssignedDatesForBooking = (guideId: number, bookingId: string, bookingStartDay: string) => {
+    const itemIds = Object.entries(itemAssignments)
+      .filter(([itemId, assignedGuideId]) => itemId.startsWith(`${bookingId}-`) && assignedGuideId === guideId)
+      .map(([itemId]) => itemId);
+    return getDatesForItemIds(bookingStartDay, itemIds);
+  };
+
+  const buildGuideOccupation = (guide: any, excludedItemIds = new Set<string>()) => {
+    const occupiedSlots = new Map<string, Set<string>>();
+    const fullDayBlocks = new Set<string>();
+    const timeRanges = new Map<string, GuideTimeException[]>();
+    const markOccupied = (dateKey: string, slot: ServiceDayPart) => {
+      const next = occupiedSlots.get(dateKey) ?? new Set<string>();
+      expandServiceDayPart(slot).forEach((value) => next.add(value));
+      occupiedSlots.set(dateKey, next);
+    };
+    const markFullDay = (dateKey: string) => {
+      fullDayBlocks.add(dateKey);
+      markOccupied(dateKey, "full-day");
+    };
+
+    guide.busyDates.forEach((busyDate: BusyDate) => {
+      const current = new Date(`${busyDate.from}T00:00:00`);
+      const end = new Date(`${busyDate.to}T00:00:00`);
+      while (current.getTime() <= end.getTime()) {
+        markFullDay(toDateKey(current));
+        current.setDate(current.getDate() + 1);
+      }
+    });
+
+    guide.tours.forEach((tour: any) => {
+      if (tour.status?.toLowerCase() === "cancelled") return;
+
+      const allAssignedEntries = Object.entries(itemAssignments).filter(
+        ([itemId, guideId]) => itemId.startsWith(`${tour.id}-`) && guideId === guide.id,
+      );
+      const assignedEntries = allAssignedEntries.filter(([itemId]) => !excludedItemIds.has(itemId));
+
+      if (allAssignedEntries.length === 0) {
+        const current = new Date(`${tour.startDay}T00:00:00`);
+        for (let day = 0; day < tour.duration; day += 1) {
+          markFullDay(toDateKey(current));
+          current.setDate(current.getDate() + 1);
+        }
+        return;
+      }
+
+      if (assignedEntries.length === 0) return;
+
+      const assignedDates = new Set<string>();
+      assignedEntries.forEach(([itemId]) => {
+        const dayMatch = itemId.match(/-d(\d+)-/);
+        if (!dayMatch) return;
+        const date = new Date(`${tour.startDay}T00:00:00`);
+        date.setDate(date.getDate() + (Number(dayMatch[1]) - 1));
+        const dateKey = toDateKey(date);
+        assignedDates.add(dateKey);
+        markOccupied(dateKey, itemTimeSlots[itemId] ?? "full-day");
+      });
+
+      assignedDates.forEach((dateKey) => {
+        const exceptions = (guide.timeExceptions ?? []).filter(
+          (exception) => exception.bookingId === tour.id && exception.date === dateKey,
+        );
+        if (exceptions.length === 0) {
+          markFullDay(dateKey);
+          return;
+        }
+        timeRanges.set(dateKey, [...(timeRanges.get(dateKey) ?? []), ...exceptions]);
+      });
+    });
+
+    return { occupiedSlots, fullDayBlocks, timeRanges };
+  };
+
+  const getGuideAvailability = (guide: any) => {
+    if (!activeAssignmentBooking) {
+      return { label: "Available", color: "text-[#1D3663]", selectable: true, requiresTimeInput: false };
+    }
+
+    const targetItemIds = getTargetItemIds();
+    const targetDates = getDatesForItemIds(activeAssignmentBooking.startDay, targetItemIds);
+    const occupation = buildGuideOccupation(guide, new Set(targetItemIds));
+
+    let selectable = true;
+    let commonAvailableSlots = new Set<string>(["morning", "afternoon", "evening"]);
+    const partialLabels = new Set<string>();
+
+    targetDates.forEach((dateKey) => {
+      if (occupation.fullDayBlocks.has(dateKey)) {
+        selectable = false;
+        commonAvailableSlots = new Set();
+        return;
+      }
+
+      const occupiedSlots = occupation.occupiedSlots.get(dateKey) ?? new Set<string>();
+      const availableSlots = new Set<string>(
+        ["morning", "afternoon", "evening"].filter((slot) => !occupiedSlots.has(slot)),
+      );
+      commonAvailableSlots = new Set(
+        Array.from(commonAvailableSlots).filter((slot) => availableSlots.has(slot)),
+      );
+
+      const ranges = (occupation.timeRanges.get(dateKey) ?? []).sort((left, right) => left.startHour - right.startHour);
+      if (ranges.length > 0) {
+        partialLabels.add(ranges.map((range) => formatHourRange(range.startHour, range.endHour)).join(", "));
+      }
+    });
+
+    if (!selectable) {
+      if (commonAvailableSlots.size === 0) {
+        return { label: "On Tour", color: "text-[#F3796A]", selectable: false, requiresTimeInput: false };
+      }
+
+      return {
+        label: `${Array.from(commonAvailableSlots).map(formatServiceDayPartLabel).join("/")} only`,
+        color: "text-[#F3796A]",
+        selectable: false,
+        requiresTimeInput: false,
+      };
+    }
+
+    if (partialLabels.size > 0) {
+      return {
+        label:
+          partialLabels.size === 1
+            ? `Available except ${Array.from(partialLabels)[0]}`
+            : "Available except scheduled hours",
+        color: "text-[#1D3663]",
+        selectable: true,
+        requiresTimeInput: true,
+      };
+    }
+
+    const slotLabel = commonAvailableSlots.size === 3
+      ? "Available"
+      : commonAvailableSlots.size > 0
+        ? `Available ${Array.from(commonAvailableSlots).map(formatServiceDayPartLabel).join("/")}`
+        : "Available";
+
+    return { label: slotLabel, color: "text-[#1D3663]", selectable: true, requiresTimeInput: false };
+  };
+  const handleClearBookingFilters = () => {
+    setModalSearchTerm("");
+    setModalFilterCountry("");
+    setModalFilterClient("");
+    setModalFilterGuide("");
+    setModalFilterDateFrom("");
+    setModalFilterDateTo("");
+    setModalFilterSeries("all");
+  };
+
+  const handleOpenBookingManager = (booking: any) => {
+    const latestBooking = bookingsData.find((item) => item.id === booking.id) ?? booking;
+    setActiveAssignmentBooking(latestBooking);
+    setSelectedItemsToAssign(new Set());
+    setShowGuideSelector(false);
+    setSelectedGuideId(null);
+    setEmailComposerState(null);
+  };
+
+  const handleCloseBookingManager = () => {
+    setActiveAssignmentBooking(null);
+    setSelectedItemsToAssign(new Set());
+    setShowGuideSelector(false);
+    setShowUnassignDialog(false);
+    setPendingUnassignGuide(null);
+    setEmailComposerState(null);
+  };
+
+  const handleDismissBookingManager = () => {
+    setActiveAssignmentBooking(null);
+    setSelectedItemsToAssign(new Set());
+    setShowGuideSelector(false);
+    setSelectedGuideId(null);
+    setEmailComposerState(null);
+  };
+
+  const handleRequestGuideStatusChange = (bookingId: string, guideName: string, isConfirmed: boolean) => {
+    const booking = bookingsData.find((item) => item.id === bookingId);
+    if (!booking) return;
+    setPendingGuideStatusChange({
+      bookingId,
+      bookingRef: booking.ref,
+      guideName,
+      isConfirmed,
+    });
+  };
+
+  const handleConfirmGuideStatusChange = async () => {
+    if (!pendingGuideStatusChange) return;
+    const nextTimelineData = await mockApi.setBookingGuideConfirmation(
+      pendingGuideStatusChange.bookingId,
+      pendingGuideStatusChange.guideName,
+      !pendingGuideStatusChange.isConfirmed,
+    );
+    applyTimelineData(nextTimelineData);
+
+    if (activeAssignmentBooking?.id === pendingGuideStatusChange.bookingId) {
+      const updatedBooking =
+        nextTimelineData.bookingsData.find((booking) => booking.id === pendingGuideStatusChange.bookingId) ?? null;
+      setActiveAssignmentBooking(updatedBooking);
+    }
+
+    setPendingGuideStatusChange(null);
+  };
+
+  const handleOpenEmailComposer = (guideId: number, guideName: string) => {
+    if (!activeAssignmentBooking) return;
+    const emailRecord = emailRecords[buildGuideEmailKey(activeAssignmentBooking.id, guideId)];
+    setEmailComposerState({
+      bookingId: activeAssignmentBooking.id,
+      bookingRef: activeAssignmentBooking.ref,
+      guideId,
+      guideName,
+      date: emailRecord?.date ?? new Date().toISOString().split("T")[0],
+      subject: emailRecord?.subject ?? `${activeAssignmentBooking.client} | ${activeAssignmentBooking.groupName} | ${guideName}`,
+      body:
+        emailRecord?.body ??
+        `Hello ${guideName},\n\nPlease review the guide arrangement for ${activeAssignmentBooking.groupName} (${activeAssignmentBooking.client}) starting ${activeAssignmentBooking.startDay}.\n\nBest regards,`,
+      actionLabel: emailRecord?.status,
+    });
+  };
+
+  const handleSaveEmailRecord = async (status: "draft" | "sent") => {
+    if (!emailComposerState) return;
+    const nextTimelineData = await mockApi.setGuideEmailRecord(emailComposerState.bookingId, emailComposerState.guideId, {
+      status,
+      date: emailComposerState.date,
+      subject: emailComposerState.subject,
+      body: emailComposerState.body,
+    });
+    applyTimelineData(nextTimelineData);
+
+    if (activeAssignmentBooking?.id === emailComposerState.bookingId) {
+      const updatedBooking =
+        nextTimelineData.bookingsData.find((booking) => booking.id === emailComposerState.bookingId) ?? null;
+      setActiveAssignmentBooking(updatedBooking);
+    }
+
+    setEmailComposerState(null);
+  };
+
+  const handleItemTimeSlotChange = async (itemId: string, slot: ServiceDayPart) => {
+    const nextTimelineData = await mockApi.setBookingItemTimeSlot(itemId, slot);
+    applyTimelineData(nextTimelineData);
+  };
+
+  const selectedAssignedGuideNames = useMemo(() => {
+    const guideNames = new Set<string>();
+    let hasUnassigned = false;
+
+    selectedItemsToAssign.forEach((itemId) => {
+      const assignedGuideId = itemAssignments[itemId];
+      if (!assignedGuideId) {
+        hasUnassigned = true;
+        return;
+      }
+      const guideName = guidesData.find((guide) => guide.id === assignedGuideId)?.name;
+      if (!guideName) {
+        hasUnassigned = true;
+        return;
+      }
+      guideNames.add(guideName);
+    });
+
+    return {
+      hasAssignedItems: guideNames.size > 0,
+      hasOnlyAssignedItems: !hasUnassigned && selectedItemsToAssign.size > 0,
+      guideNames: Array.from(guideNames),
+    };
+  }, [selectedItemsToAssign, itemAssignments, guidesData]);
+
+  const handleClearSelectedItems = () => {
+    setSelectedItemsToAssign(new Set());
+  };
+
+  const handleUnassignSelectedItems = async () => {
+    if (!activeAssignmentBooking || selectedItemsToAssign.size === 0) return;
+    const nextTimelineData = await mockApi.unassignBookingItems(activeAssignmentBooking.id, Array.from(selectedItemsToAssign));
+    applyTimelineData(nextTimelineData);
+    const updatedBooking = nextTimelineData.bookingsData.find((booking) => booking.id === activeAssignmentBooking.id) ?? null;
+    setActiveAssignmentBooking(updatedBooking);
+    setSelectedItemsToAssign(new Set());
+    setSelectedGuideId(null);
+    setShowGuideSelector(false);
+  };
+
+  const openGuideTimingEditor = (guideId: number, guideName: string) => {
+    if (!activeAssignmentBooking) return;
+    const guide = guidesWithTours.find((item: any) => item.id === guideId);
+    if (!guide) return;
+
+    const dates = getGuideAssignedDatesForBooking(guideId, activeAssignmentBooking.id, activeAssignmentBooking.startDay);
+    const existingByDate = new Map(
+      (guide.timeExceptions ?? [])
+        .filter((exception) => exception.bookingId === activeAssignmentBooking.id)
+        .map((exception) => [exception.date, exception]),
+    );
+
+    setGuideTimingModalState({
+      mode: "edit-assigned",
+      guideId,
+      guideName,
+      bookingId: activeAssignmentBooking.id,
+      title: `Timing for ${guideName}`,
+      submitLabel: "Save Timing",
+      description: "Define hour blocks for assigned dates. Leave a date blank to keep it as a full-day booking.",
+      drafts: dates.map((date) => ({
+        date,
+        startHour: existingByDate.get(date)?.startHour?.toString() ?? "",
+        endHour: existingByDate.get(date)?.endHour?.toString() ?? "",
+      })),
+    });
+  };
+
+  const handleSelectGuide = (guideId: number) => {
+    if (!activeAssignmentBooking) return;
+    const guide = guidesWithTours.find((item: any) => item.id === guideId);
+    if (!guide) return;
+
+    const availability = getGuideAvailability(guide);
+    if (!availability.selectable) return;
+
+    if (!availability.requiresTimeInput) {
+      setSelectedGuideId(guideId);
+      return;
+    }
+
+    const targetItemIds = getTargetItemIds();
+    const targetDates = getDatesForItemIds(activeAssignmentBooking.startDay, targetItemIds);
+    const occupation = buildGuideOccupation(guide, new Set(targetItemIds));
+    const drafts = targetDates
+      .filter((date) => (occupation.timeRanges.get(date) ?? []).length > 0)
+      .map((date) => ({ date, startHour: "", endHour: "" }));
+
+    setGuideTimingModalState({
+      mode: "select-assignment",
+      guideId,
+      guideName: guide.name,
+      bookingId: activeAssignmentBooking.id,
+      title: `New timing for ${guide.name}`,
+      submitLabel: "Assign With Timing",
+      description: "This guide already has a timed assignment on the same date. Add a non-overlapping hour range for each date below.",
+      drafts,
+    });
+  };
+
+  const handleGuideTimingDraftChange = (date: string, field: "startHour" | "endHour", value: string) => {
+    setGuideTimingModalState((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        drafts: current.drafts.map((draft) => (draft.date === date ? { ...draft, [field]: value } : draft)),
+      };
+    });
+  };
+
+  const handleCloseGuideTimingModal = () => {
+    if (guideTimingModalState?.mode === "select-assignment") {
+      setSelectedGuideId(null);
+    }
+    setGuideTimingModalState(null);
+  };
+
+  const handleSaveGuideTiming = async () => {
+    if (!guideTimingModalState || !activeAssignmentBooking) return;
+
+    const guide = guidesWithTours.find((item: any) => item.id === guideTimingModalState.guideId);
+    if (!guide) return;
+
+    const entries: Array<{ date: string; startHour: number; endHour: number }> = [];
+    for (const draft of guideTimingModalState.drafts) {
+      const hasStart = draft.startHour.trim() !== "";
+      const hasEnd = draft.endHour.trim() !== "";
+
+      if (!hasStart && !hasEnd) continue;
+      if (!hasStart || !hasEnd) {
+        alert(`Please complete both start and end time for ${draft.date}.`);
+        return;
+      }
+
+      const startHour = Number(draft.startHour);
+      const endHour = Number(draft.endHour);
+      if (
+        Number.isNaN(startHour) ||
+        Number.isNaN(endHour) ||
+        startHour < 0 ||
+        endHour > 24 ||
+        startHour >= endHour
+      ) {
+        alert(`Invalid time range for ${draft.date}. Use 0-24 hours and keep start earlier than end.`);
+        return;
+      }
+
+      const sameDayRanges = (guide.timeExceptions ?? []).filter(
+        (exception) =>
+          exception.date === draft.date &&
+          exception.guideId === guideTimingModalState.guideId &&
+          !(exception.bookingId === guideTimingModalState.bookingId && exception.guideId === guideTimingModalState.guideId),
+      );
+      const hasOverlap = sameDayRanges.some(
+        (exception) => startHour < exception.endHour && endHour > exception.startHour,
+      );
+      if (hasOverlap) {
+        alert(`The selected range for ${draft.date} overlaps an existing assignment.`);
+        return;
+      }
+
+      entries.push({ date: draft.date, startHour, endHour });
+    }
+
+    let nextTimelineData;
+
+    if (guideTimingModalState.mode === "select-assignment") {
+      await mockApi.assignBookingItems(
+        activeAssignmentBooking.id,
+        guideTimingModalState.guideId,
+        Array.from(selectedItemsToAssign),
+      );
+      nextTimelineData = await mockApi.setGuideBookingTimeExceptions(
+        guideTimingModalState.bookingId,
+        guideTimingModalState.guideId,
+        entries,
+      );
+      setShowGuideSelector(false);
+      setSelectedItemsToAssign(new Set());
+      setSelectedGuideId(null);
+    } else {
+      nextTimelineData = await mockApi.setGuideBookingTimeExceptions(
+        guideTimingModalState.bookingId,
+        guideTimingModalState.guideId,
+        entries,
+      );
+    }
+
+    applyTimelineData(nextTimelineData);
+    const updatedBooking = nextTimelineData.bookingsData.find((booking) => booking.id === activeAssignmentBooking.id) ?? null;
+    setActiveAssignmentBooking(updatedBooking);
+    setGuideTimingModalState(null);
+  };
+
+  const handleConfirmAssignment = async () => {
+    if (!activeAssignmentBooking || !selectedGuideId) return;
+
+    const nextTimelineData = await mockApi.assignBookingItems(
+      activeAssignmentBooking.id,
+      selectedGuideId,
+      Array.from(selectedItemsToAssign),
+    );
+    applyTimelineData(nextTimelineData);
+    const updatedBooking = nextTimelineData.bookingsData.find((booking) => booking.id === activeAssignmentBooking.id) ?? null;
+    setActiveAssignmentBooking(updatedBooking);
+    setShowGuideSelector(false);
+    setSelectedItemsToAssign(new Set());
+    setSelectedGuideId(null);
+  };
+
+  const handleStartUnassignGuide = (guideName: string) => {
+    setPendingUnassignGuide(guideName);
+    setShowUnassignDialog(true);
+  };
+
+  const handleCancelUnassignGuide = () => {
+    setShowUnassignDialog(false);
+    setPendingUnassignGuide(null);
+  };
+
+  const detailsGuide = guidesWithTours.find((g: any) => g.id === guideDetailsModalId);
+
+  return (
+    <div className="flex flex-col h-screen bg-[#C4E8FF]/20 overflow-hidden font-sans text-[#1D3663] select-none w-full">
+
+      {/* GLOBAL STICKY HEADER & TABS */}
+      <header className="h-16 bg-white border-b border-[#C4E8FF] flex items-center justify-between px-6 shrink-0 z-50 shadow-sm sticky top-0">
+        <div className="flex items-center gap-8 h-full">
+          <h1 className="text-xl font-bold text-[#1D3663] mr-4">Guide Management</h1>
+          <nav className="flex h-full gap-8">
+            <Link to="/timeline?tab=calendar" onClick={() => setActiveTab('calendar')} className={`h-full flex items-center px-2 font-black uppercase tracking-widest text-xs border-b-[3px] transition-colors ${activeTab === 'calendar' ? 'border-[#F3796A] text-[#F3796A]' : 'border-transparent text-[#1D3663]/50 hover:text-[#1D3663]'}`}>Calendar</Link>
+            <Link to="/timeline?tab=bookings" onClick={() => setActiveTab('bookings')} className={`h-full flex items-center px-2 font-black uppercase tracking-widest text-xs border-b-[3px] transition-colors ${activeTab === 'bookings' ? 'border-[#F3796A] text-[#F3796A]' : 'border-transparent text-[#1D3663]/50 hover:text-[#1D3663]'}`}>Bookings</Link>
+            <Link to="/guides" className="h-full flex items-center px-2 font-black uppercase tracking-widest text-xs border-b-[3px] border-transparent transition-colors text-[#1D3663]/50 hover:text-[#1D3663]">Guides</Link>
+          </nav>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="w-8 h-8 rounded-full bg-[#1D3663] flex items-center justify-center text-white font-bold text-xs">U</div>
+        </div>
+      </header>
+
+      <main className="flex-1 overflow-hidden relative z-0 flex flex-col">
+
+        {/* --- CALENDAR TAB --- */}
+        {activeTab === 'calendar' && (
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#C4E8FF]/10 relative">
+            <div className="bg-white px-6 py-3 flex flex-col shrink-0 border-b border-[#C4E8FF] z-20 relative">
+              <div className="flex items-center justify-between mb-3 pb-3 border-b border-[#C4E8FF]/50">
+                <div className="flex items-center gap-4">
+                  <h2 className="text-lg font-black text-[#1D3663] w-16">{currentYear}</h2>
+                  <div className="flex border border-[#C4E8FF] rounded-xl overflow-hidden shadow-sm bg-white mr-4">
+                    <button onClick={() => setCurrentYear(prev => prev - 1)} className="p-1.5 hover:bg-[#C4E8FF]/20 border-r border-[#C4E8FF]"><ChevronLeft className="w-4 h-4 text-[#1D3663]" /></button>
+                    <button onClick={() => setCurrentYear(prev => prev + 1)} className="p-1.5 hover:bg-[#C4E8FF]/20"><ChevronRight className="w-4 h-4 text-[#1D3663]" /></button>
+                  </div>
+
+                  <div className="h-6 w-px bg-[#C4E8FF] mx-1"></div>
+
+                  <div className="flex border border-[#C4E8FF] rounded-xl overflow-hidden shadow-sm bg-white ml-2">
+                    <button disabled={guidePage === 1} onClick={() => setGuidePage((p) => Math.max(1, p - 1))} className="px-2 hover:bg-[#C4E8FF]/20 border-r border-[#C4E8FF] disabled:opacity-30"><ChevronLeft className="w-3 h-3 text-[#1D3663]" /></button>
+                    <span className="px-3 py-1 text-[9px] font-black text-[#1D3663] bg-[#C4E8FF]/20 uppercase tracking-widest">Guides {guidePage}/{totalGuidePages}</span>
+                    <button disabled={guidePage >= totalGuidePages} onClick={() => setGuidePage((p) => Math.min(totalGuidePages, p + 1))} className="px-2 hover:bg-[#C4E8FF]/20 border-l border-[#C4E8FF] disabled:opacity-30"><ChevronRight className="w-3 h-3 text-[#1D3663]" /></button>
+                  </div>
+
+                  <div className="h-6 w-px bg-[#C4E8FF] mx-1"></div>
+
+                  <div className="flex items-center gap-2 bg-[#C4E8FF]/20 p-1 rounded-xl border border-[#C4E8FF] ml-2">
+                    <ZoomIn className="w-4 h-4 text-[#1D3663]/65 ml-2" />
+                    <div className="flex gap-1">
+                      <button onClick={() => setZoomLevel(1)} className={`px-3 py-1.5 text-[10px] uppercase tracking-widest font-black rounded-lg transition-all ${zoomLevel === 1 ? "bg-white text-[#1D3663] shadow-sm" : "text-[#1D3663]/65 hover:text-[#1D3663]"}`}>12 Months</button>
+                      <button onClick={() => setZoomLevel(2)} className={`px-3 py-1.5 text-[10px] uppercase tracking-widest font-black rounded-lg transition-all ${zoomLevel === 2 ? "bg-white text-[#1D3663] shadow-sm" : "text-[#1D3663]/65 hover:text-[#1D3663]"}`}>Quarterly</button>
+                      <button onClick={() => setZoomLevel(3)} className={`px-3 py-1.5 text-[10px] uppercase tracking-widest font-black rounded-lg transition-all ${zoomLevel === 3 ? "bg-white text-[#1D3663] shadow-sm" : "text-[#1D3663]/65 hover:text-[#1D3663]"}`}>Daily</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2 text-[10px] font-bold text-[#1D3663]/65 uppercase tracking-widest mr-2"><Filter className="w-3 h-3" /> Filters:</div>
+                <input type="text" placeholder="Guide Name..." value={filterGuide} onChange={(e) => { setFilterGuide(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-3 py-1.5 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none w-32" />
+                <input type="text" placeholder="Ref or Group..." value={filterSearch} onChange={(e) => { setFilterSearch(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-3 py-1.5 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none w-32" />
+
+                <input type="text" list="timeline-clients" placeholder="Client..." value={filterClient} onChange={(e) => { setFilterClient(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-3 py-1.5 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none w-32" />
+                <datalist id="timeline-clients">
+                  {allClients.map(c => <option key={c} value={c} />)}
+                </datalist>
+
+                <input type="text" list="timeline-countries" placeholder="Country..." value={filterCountry} onChange={(e) => { setFilterCountry(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-3 py-1.5 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none w-32" />
+                <datalist id="timeline-countries">
+                  {allCountries.map(c => <option key={c} value={c} />)}
+                </datalist>
+
+                <div className="flex items-center gap-1 ml-2">
+                  <span className="text-[9px] font-bold text-[#1D3663]/65 uppercase">Travel From</span>
+                  <input type="date" value={filterDateFrom} onChange={(e) => { setFilterDateFrom(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-2 py-1 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none h-[30px]" />
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[9px] font-bold text-[#1D3663]/65 uppercase">To</span>
+                  <input type="date" value={filterDateTo} onChange={(e) => { setFilterDateTo(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-2 py-1 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none h-[30px]" />
+                </div>
+
+                <div className="flex items-center gap-2 bg-[#C4E8FF]/10 px-2 py-1.5 rounded-lg border border-[#C4E8FF] ml-2">
+                  <label className="text-[10px] font-bold text-[#1D3663] flex items-center gap-1 cursor-pointer"><input type="radio" name="timelineSeries" value="all" checked={filterSeries === 'all'} onChange={() => { setFilterSeries('all'); setGuidePage(1) }} /> All</label>
+                  <label className="text-[10px] font-bold text-[#1D3663] flex items-center gap-1 cursor-pointer"><input type="radio" name="timelineSeries" value="series" checked={filterSeries === 'series'} onChange={() => { setFilterSeries('series'); setGuidePage(1) }} /> Series</label>
+                  <label className="text-[10px] font-bold text-[#1D3663] flex items-center gap-1 cursor-pointer"><input type="radio" name="timelineSeries" value="noseries" checked={filterSeries === 'noseries'} onChange={() => { setFilterSeries('noseries'); setGuidePage(1) }} /> No Series</label>
+                </div>
+
+                {(filterGuide || filterSearch || filterClient || filterCountry || filterDateFrom || filterDateTo || filterSeries !== "all") && (
+                  <button onClick={() => { setFilterGuide(""); setFilterSearch(""); setFilterClient(""); setFilterCountry(""); setFilterDateFrom(""); setFilterDateTo(""); setFilterSeries("all"); setGuidePage(1); }} className="text-[10px] font-bold text-[#F3796A] hover:underline uppercase ml-2">Clear Filters</button>
+                )}
+              </div>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-auto relative bg-[#C4E8FF]/10 pb-10" ref={timelineScrollRef}>
+              <div className="min-w-full inline-block bg-white border-b border-[#C4E8FF]">
+
+                <div className="flex sticky top-0 z-[60] bg-white border-b border-[#C4E8FF] shadow-[0_2px_5px_rgba(0,0,0,0.02)]">
+                  <div className="w-[260px] shrink-0 sticky left-0 z-[70] bg-white border-r border-[#C4E8FF] h-10 flex items-center px-6">
+                    <span className="text-[11px] font-bold text-[#1D3663]/65 uppercase tracking-widest">Guide Directory</span>
+                  </div>
+
+                  <div className="flex relative" style={timelineTrackStyle}>
+                    {!isDaily ? (
+                      MONTHS.map((month, mIdx) => {
+                        const days = new Date(currentYear, mIdx + 1, 0).getDate();
+                        const pct = (days / totalDaysInYear) * 100;
+                        return (
+                          <div key={month} style={{ width: `${pct}%` }} className="h-10 flex items-center justify-center border-r border-[#C4E8FF] bg-[#C4E8FF]/20">
+                            <span className="text-xs font-bold text-[#1D3663]">{month}</span>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="flex flex-col flex-1 min-w-max relative z-0">
+                        <div className="absolute inset-0 pointer-events-none z-[60]">
+                          <div className="sticky left-[260px] float-left top-0 bg-white border-r border-b border-[#C4E8FF] text-[#F3796A] px-2 py-0.5 rounded-br-md text-[8px] font-black uppercase tracking-widest shadow-sm transition-all duration-75 ease-out">
+                            {visibleDateStart}
+                          </div>
+                          <div className="sticky right-0 float-right top-0 bg-white border-l border-b border-[#C4E8FF] text-[#F3796A] px-2 py-0.5 rounded-bl-md text-[8px] font-black uppercase tracking-widest shadow-sm transition-all duration-75 ease-out">
+                            {visibleDateEnd}
+                          </div>
+                        </div>
+
+                        <div className="flex h-5 border-b border-[#C4E8FF] relative z-10">
+                          {MONTHS.map((month, mIdx) => {
+                            const days = new Date(currentYear, mIdx + 1, 0).getDate();
+                            return (
+                              <div key={month} style={{ width: `${days * currentCellWidth}px` }} className="flex items-center justify-center bg-[#C4E8FF]/20 border-r border-[#C4E8FF] shrink-0">
+                                <span className="text-[10px] font-bold text-[#1D3663] uppercase tracking-widest">{month}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="flex h-5 relative z-10">
+                          {allDaysInYear.map((date, i) => {
+                            const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+                            return (
+                              <div key={i} style={{ width: `${currentCellWidth}px` }} className={`flex items-center justify-center border-r border-[#C4E8FF] shrink-0 ${isWeekend ? "bg-[#C4E8FF]/35" : "bg-white"}`}>
+                                <span className={`font-black ${zoomLevel === 3 ? 'text-[9px]' : 'text-[7px]'} ${isWeekend ? "text-[#F3796A]" : "text-[#1D3663]"}`}>
+                                  {date.getDate()}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {paginatedGuides.length === 0 ? (
+                  <div className="py-10 text-center text-[#1D3663]/55 font-bold">No guides match the current filter criteria.</div>
+                ) : paginatedGuides.map((guide: any) => {
+
+                  const filteredTours = guide.tours.filter((t: any) => {
+                    const matchSearch = filterSearch ? (t.ref.toLowerCase().includes(filterSearch.toLowerCase()) || t.groupName.toLowerCase().includes(filterSearch.toLowerCase())) : true;
+                    const matchClient = filterClient ? t.client.toLowerCase().includes(filterClient.toLowerCase()) : true;
+                    const matchCountry = filterCountry ? t.country?.toLowerCase().includes(filterCountry.toLowerCase()) : true;
+
+                    const sName = getSeriesName(t.groupName);
+                    const isSeriesTour = sName !== "NO SERIES";
+                    const matchSeries = filterSeries === "series" ? isSeriesTour : filterSeries === "noseries" ? !isSeriesTour : true;
+
+                    let matchDate = true;
+                    if (filterDateFrom || filterDateTo) {
+                      const tStart = new Date(`${t.startDay}T00:00:00`).getTime();
+                      const tEnd = tStart + (t.duration - 1) * 86400000;
+                      if (filterDateFrom && filterDateTo) {
+                        const fStart = new Date(`${filterDateFrom}T00:00:00`).getTime();
+                        const fEnd = new Date(`${filterDateTo}T00:00:00`).getTime();
+                        matchDate = tStart <= fEnd && tEnd >= fStart;
+                      } else if (filterDateFrom) { matchDate = tEnd >= new Date(`${filterDateFrom}T00:00:00`).getTime(); }
+                      else if (filterDateTo) { matchDate = tStart <= new Date(`${filterDateTo}T00:00:00`).getTime(); }
+                    }
+                    return matchSearch && matchClient && matchCountry && matchDate && matchSeries;
+                  });
+
+                  const events: any[] = [];
+
+                  filteredTours.forEach((t: any) => {
+                    let hasAnyAssignmentForBooking = false;
+                    let hasDetailedAssignmentsForThisGuide = false;
+                    let assignedDays = new Set<number>();
+
+                    Object.entries(itemAssignments).forEach(([itemId, gId]) => {
+                      if (itemId.startsWith(`${t.id}-`)) {
+                        hasAnyAssignmentForBooking = true;
+                        if (gId === guide.id) {
+                          hasDetailedAssignmentsForThisGuide = true;
+                          const match = itemId.match(/-d(\d+)-/);
+                          if (match) assignedDays.add(parseInt(match[1], 10));
+                        }
+                      }
+                    });
+
+                    if (hasAnyAssignmentForBooking) {
+                      if (hasDetailedAssignmentsForThisGuide && assignedDays.size > 0) {
+                        const sortedDays = Array.from(assignedDays).sort((a, b) => a - b);
+                        let blockStart = sortedDays[0];
+                        let blockEnd = sortedDays[0];
+
+                        const pushBlock = (sDay: number, eDay: number) => {
+                          const d = new Date(`${t.startDay}T00:00:00`);
+                          d.setDate(d.getDate() + (sDay - 1));
+                          const y = d.getFullYear();
+                          const m = String(d.getMonth() + 1).padStart(2, "0");
+                          const day = String(d.getDate()).padStart(2, "0");
+                          const startStr = `${y}-${m}-${day}`;
+
+                          events.push({
+                            type: "tour", start: startStr, duration: (eDay - sDay + 1), data: t,
+                            guideStatus: t.confirmedGuides?.includes(guide.name) ? "confirmed" : "requested",
+                            isCancelled: t.status?.toLowerCase() === "cancelled"
+                          });
+                        };
+
+                        for (let i = 1; i < sortedDays.length; i++) {
+                          if (sortedDays[i] === blockEnd + 1) {
+                            blockEnd = sortedDays[i];
+                          } else {
+                            pushBlock(blockStart, blockEnd);
+                            blockStart = sortedDays[i];
+                            blockEnd = sortedDays[i];
+                          }
+                        }
+                        pushBlock(blockStart, blockEnd);
+                      }
+                    } else {
+                      events.push({
+                        type: "tour", start: t.startDay, duration: t.duration, data: t,
+                        guideStatus: t.confirmedGuides?.includes(guide.name) ? "confirmed" : "requested",
+                        isCancelled: t.status?.toLowerCase() === "cancelled"
+                      });
+                    }
+                  });
+
+                  guide.busyDates.forEach((b: any) => {
+                    events.push({
+                      type: "busy", start: b.from, end: b.to, data: b,
+                      duration: Math.round((new Date(`${b.to}T00:00:00`).getTime() - new Date(`${b.from}T00:00:00`).getTime()) / 86400000) + 1
+                    });
+                  });
+
+                  const eventsInPeriodArr = events.filter((e: any) => {
+                    const eStart = new Date(`${e.start}T00:00:00`).getTime();
+                    const eEnd = eStart + e.duration * 86400000;
+                    return eStart < yearEndMs && eEnd > yearStartMs;
+                  });
+
+                  const confirmedCount = eventsInPeriodArr.filter((e: any) => e.type === "tour" && !isCancelledEvent(e) && e.guideStatus === "confirmed").length;
+                  const requestedCount = eventsInPeriodArr.filter((e: any) => e.type === "tour" && !isCancelledEvent(e) && e.guideStatus === "requested").length;
+                  const cancelledCount = eventsInPeriodArr.filter((e: any) => e.type === "tour" && isCancelledEvent(e)).length;
+                  const busyCount = eventsInPeriodArr.filter((e: any) => e.type === "busy").length;
+
+                  return (
+                    <div key={guide.id} className="flex h-10 border-b border-[#C4E8FF]/60 group relative hover:bg-[#ebf6ff] z-0">
+                      <div className="w-[260px] shrink-0 sticky left-0 z-[50] bg-white group-hover:bg-[#ebf6ff] border-r border-[#C4E8FF] flex items-center justify-between px-4 py-1 transition-colors shadow-[2px_0_5px_rgba(0,0,0,0.02)] h-10">
+                        <div
+                          onDoubleClick={() => { setGuideDetailsModalId(guide.id); setDetailsModalYear(new Date().getFullYear()); setGuideOverviewFilter('total'); }}
+                          className="flex flex-col w-[110px] cursor-pointer group/name p-1 rounded-lg hover:bg-[#C4E8FF]/35 transition-colors"
+                          title="Double-click to manage details & busy dates"
+                        >
+                          <span className="text-xs font-bold text-[#1D3663] truncate w-full group-hover/name:text-[#F3796A]">{guide.name}</span>
+                          <span className="text-[9px] font-bold text-[#1D3663]/55 uppercase mt-0.5 truncate">{guide.tags.join(" • ")}</span>
+                        </div>
+                        <div className="flex items-center gap-2.5 shrink-0 overflow-hidden pr-2">
+                          {confirmedCount > 0 && <span className="text-[10px] font-bold text-[#1D3663] whitespace-nowrap">{confirmedCount} Acpt</span>}
+                          {requestedCount > 0 && <span className="text-[10px] font-bold text-[#F3796A] whitespace-nowrap">{requestedCount} Wait</span>}
+                          {cancelledCount > 0 && <span className="text-[10px] font-bold text-[#1D3663]/45 whitespace-nowrap line-through">{cancelledCount} Canc</span>}
+                          {busyCount > 0 && <span className="text-[10px] font-bold text-red-600 whitespace-nowrap">{busyCount} Busy</span>}
+                        </div>
+                      </div>
+
+                      <div className="flex relative z-0" style={timelineTrackStyle}>
+                        {!isDaily ? (
+                          MONTHS.map((month, mIdx) => {
+                            const days = new Date(currentYear, mIdx + 1, 0).getDate();
+                            const pct = (days / totalDaysInYear) * 100;
+                            return <div key={mIdx} style={{ width: `${pct}%` }} className="border-r border-[#C4E8FF]/60 pointer-events-none" />;
+                          })
+                        ) : (
+                          allDaysInYear.map((date, i) => {
+                            const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+                            return <div key={i} style={{ width: `${currentCellWidth}px` }} className={`shrink-0 border-r border-[#C4E8FF]/60 pointer-events-none ${isWeekend ? "bg-[#C4E8FF]/15" : ""}`} />;
+                          })
+                        )}
+
+                        {eventsInPeriodArr.map((event: any, eIdx: number) => {
+                          const eStartMs = new Date(`${event.start}T00:00:00`).getTime();
+                          const tStartMs = yearStartMs;
+                          const daysDiff = (eStartMs - tStartMs) / 86400000;
+                          const leftStyle = `calc(${(daysDiff / totalDaysInYear) * 100}% + 2px)`;
+                          const widthStyle = `calc(${(event.duration / totalDaysInYear) * 100}% - 4px)`;
+
+                          const seriesName = event.type === "tour" ? getSeriesName(event.data.groupName) : null;
+                          const isDimmed = hoveredSeries && seriesName && hoveredSeries !== seriesName;
+
+                          const getTooltip = () => {
+                            if (event.type === "busy") return "Busy";
+                            const { client, ref, status, country } = event.data;
+                            return `${client} - ${ref} (${status})\nCountry: ${country || 'N/A'}`;
+                          };
+
+                          return (
+                            <div
+                              key={eIdx}
+                              className={`absolute top-1/2 -translate-y-1/2 h-6 z-10 shadow-sm rounded-none overflow-hidden cursor-pointer transition-all duration-200 ${getEventBarClasses(event)} ${isDimmed ? 'opacity-20 grayscale' : 'hover:brightness-95 hover:shadow-md'}`}
+                              style={{ left: leftStyle, width: widthStyle }}
+                              title={getTooltip()}
+                              onMouseEnter={() => { if (seriesName) setHoveredSeries(seriesName); }}
+                              onMouseLeave={() => setHoveredSeries(null)}
+                              onDoubleClick={(e) => {
+                                e.stopPropagation();
+                                if (event.type === "tour") {
+                                  handleOpenBookingManager(event.data);
+                                }
+                              }}
+                            >
+                              {event.type === "tour" && !isCancelledEvent(event) && zoomLevel !== 1 && (
+                                <div className="w-full h-full flex items-center px-1.5">
+                                  <span className="text-[9px] font-black text-white uppercase tracking-widest truncate">{seriesName !== "NO SERIES" ? seriesName : event.data.groupName}</span>
+                                </div>
+                              )}
+                              {isCancelledEvent(event) && (
+                                <div className="absolute inset-0 flex items-center pointer-events-none overflow-hidden">
+                                  <div className="w-full border-t-2 border-[#F3796A]"></div>
+                                </div>
+                              )}
+                              {event.type === "busy" && zoomLevel !== 1 && (
+                                <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
+                                  <span className="text-[10px] font-black text-white/80 uppercase tracking-widest px-1">X</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* --- BOOKINGS TAB --- */}
+        {activeTab === 'bookings' && (
+          <TimelineBookingsTab
+            allClients={allClients}
+            allCountries={allCountries}
+            modalSearchTerm={modalSearchTerm}
+            modalFilterClient={modalFilterClient}
+            modalFilterCountry={modalFilterCountry}
+            modalFilterGuide={modalFilterGuide}
+            modalFilterDateFrom={modalFilterDateFrom}
+            modalFilterDateTo={modalFilterDateTo}
+            modalFilterSeries={modalFilterSeries}
+            groupedBySeries={groupedBySeries}
+            expandedSeries={expandedSeries}
+            getSeriesStats={getSeriesStats}
+            getStatusBadge={getStatusBadge}
+            onSearchTermChange={setModalSearchTerm}
+            onFilterClientChange={setModalFilterClient}
+            onFilterCountryChange={setModalFilterCountry}
+            onFilterGuideChange={setModalFilterGuide}
+            onFilterDateFromChange={setModalFilterDateFrom}
+            onFilterDateToChange={setModalFilterDateTo}
+            onFilterSeriesChange={setModalFilterSeries}
+            onClearFilters={handleClearBookingFilters}
+            onToggleSeriesAccordion={toggleSeriesAccordion}
+            onToggleGuideConfirmation={handleRequestGuideStatusChange}
+            onManageBooking={handleOpenBookingManager}
+          />
+        )}
+      </main>
+
+      {/* --- DUAL PANE MODAL: Guide Details & Busy Dates (Full Screen) --- */}
+      {guideDetailsModalId && detailsGuide && (() => {
+        // Calculate stats dynamically based on the selected detailsModalYear
+        const toursInYear = detailsGuide.tours.filter((t: any) => t.startDay.startsWith(detailsModalYear.toString()));
+        const todayMs = new Date().getTime();
+
+        let finishedCount = 0;
+        let incomingCount = 0;
+
+        toursInYear.forEach((t: any) => {
+          if (t.status?.toLowerCase() === 'cancelled') return;
+          const endMs = new Date(`${t.startDay}T00:00:00`).getTime() + (t.duration - 1) * 86400000;
+          if (endMs < todayMs) {
+            finishedCount++;
+          } else {
+            incomingCount++;
+          }
+        });
+
+        // Filtered view based on the current guideOverviewFilter state
+        const displayedToursInYear = toursInYear.filter((t: any) => {
+          if (t.status?.toLowerCase() === 'cancelled') return true;
+          const endMs = new Date(`${t.startDay}T00:00:00`).getTime() + (t.duration - 1) * 86400000;
+          if (guideOverviewFilter === 'finished') return endMs < todayMs;
+          if (guideOverviewFilter === 'incoming') return endMs >= todayMs;
+          return true;
+        });
+
+        const busyDatesInYear = detailsGuide.busyDates.filter((b: any) => b.from.startsWith(detailsModalYear.toString()) || b.to.startsWith(detailsModalYear.toString()));
+
+        return (
+          <div className="fixed inset-0 z-[120] bg-white flex flex-col animate-in fade-in">
+
+            {/* Header */}
+            <div className="p-6 border-b border-[#C4E8FF] flex justify-between items-center bg-white shrink-0 shadow-sm relative z-10">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-full bg-[#C4E8FF]/40 flex items-center justify-center border border-[#C4E8FF]">
+                  <UserCheck className="w-6 h-6 text-[#1D3663]" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-[#1D3663] uppercase tracking-tight">{detailsGuide.name}</h3>
+                  <div className="text-[10px] font-bold text-[#1D3663]/55 uppercase tracking-widest mt-0.5">{detailsGuide.tags.join(" • ")}</div>
+                </div>
+              </div>
+
+              {/* Unified Year Selector */}
+              <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-4">
+                <div className="flex border border-[#C4E8FF] rounded-xl overflow-hidden shadow-sm bg-white">
+                  <button onClick={() => setDetailsModalYear(prev => prev - 1)} className="p-2 hover:bg-[#C4E8FF]/20 border-r border-[#C4E8FF] transition-colors"><ChevronLeft className="w-4 h-4 text-[#1D3663]" /></button>
+                  <div className="px-6 py-2 bg-[#C4E8FF]/10 text-sm font-black text-[#1D3663] flex items-center justify-center w-24">{detailsModalYear}</div>
+                  <button onClick={() => setDetailsModalYear(prev => prev + 1)} className="p-2 hover:bg-[#C4E8FF]/20 border-l border-[#C4E8FF] transition-colors"><ChevronRight className="w-4 h-4 text-[#1D3663]" /></button>
+                </div>
+              </div>
+
+              <button onClick={() => setGuideDetailsModalId(null)} className="p-2.5 hover:bg-[#C4E8FF]/30 rounded-full transition-colors text-[#1D3663]/55 hover:text-[#1D3663]">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Dual Pane Body */}
+            <div className="flex-1 flex min-h-0 bg-[#C4E8FF]/5">
+
+              {/* LEFT PANE: Annual Booking Overview */}
+              <div className="w-[35%] flex flex-col border-r border-[#C4E8FF] bg-white">
+                {/* Enforced equal header heights */}
+                <div className="p-6 shrink-0 border-b border-[#C4E8FF]/50 bg-gray-50/50 h-[176px] flex flex-col justify-between">
+                  <h4 className="text-sm font-black text-[#1D3663] uppercase tracking-wide flex items-center gap-2"><Briefcase className="w-4 h-4 text-[#F3796A]" /> Annual Booking Overview</h4>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div onClick={() => setGuideOverviewFilter('total')} className={`bg-white p-4 rounded-2xl border cursor-pointer hover:bg-gray-50 transition-all ${guideOverviewFilter === 'total' ? 'border-[#1D3663] ring-1 ring-[#1D3663]' : 'border-[#C4E8FF] shadow-sm'} flex flex-col items-center justify-center text-center`}>
+                      <span className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">Total Bookings</span>
+                      <span className="text-2xl font-black text-[#1D3663] mt-1">{toursInYear.length}</span>
+                    </div>
+                    <div onClick={() => setGuideOverviewFilter('finished')} className={`bg-white p-4 rounded-2xl border cursor-pointer hover:bg-emerald-50/50 transition-all ${guideOverviewFilter === 'finished' ? 'border-emerald-600 ring-1 ring-emerald-600' : 'border-[#C4E8FF] shadow-sm'} flex flex-col items-center justify-center text-center`}>
+                      <span className="text-[9px] font-black text-emerald-600/70 uppercase tracking-widest flex items-center gap-1"><History className="w-3 h-3" /> Finished</span>
+                      <span className="text-2xl font-black text-emerald-600 mt-1">{finishedCount}</span>
+                    </div>
+                    <div onClick={() => setGuideOverviewFilter('incoming')} className={`bg-white p-4 rounded-2xl border cursor-pointer hover:bg-[#F3796A]/5 transition-all ${guideOverviewFilter === 'incoming' ? 'border-[#F3796A] ring-1 ring-[#F3796A]' : 'border-[#C4E8FF] shadow-sm'} flex flex-col items-center justify-center text-center`}>
+                      <span className="text-[9px] font-black text-[#F3796A] uppercase tracking-widest flex items-center gap-1"><PlaneLanding className="w-3 h-3" /> Incoming</span>
+                      <span className="text-2xl font-black text-[#F3796A] mt-1">{incomingCount}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-auto p-4 px-6 space-y-2.5">
+                  {displayedToursInYear.length === 0 ? (
+                    <div className="text-center py-10 text-[#1D3663]/45 font-bold italic text-sm">No bookings found for the selected view.</div>
+                  ) : (
+                    displayedToursInYear.sort((a: any, b: any) => new Date(a.startDay).getTime() - new Date(b.startDay).getTime()).map((t: any) => {
+                      const endObj = new Date(new Date(t.startDay).getTime() + (t.duration - 1) * 86400000);
+                      const endStr = endObj.toISOString().split('T')[0];
+                      const isCancelled = t.status?.toLowerCase() === 'cancelled';
+
+                      return (
+                        <div key={t.id} className={`px-4 py-3 rounded-xl border ${isCancelled ? 'border-[#C4E8FF]/50 bg-gray-50 opacity-60' : 'border-[#C4E8FF] bg-white shadow-sm'} transition-all flex items-center justify-between gap-3`}>
+                          <div className="flex flex-col min-w-0">
+                            <div className={`text-xs font-black truncate leading-tight ${isCancelled ? 'text-[#1D3663]/60 line-through' : 'text-[#1D3663]'}`} title={t.ref}>{t.ref}</div>
+                            <div className="text-[10px] font-bold text-[#1D3663]/65 mt-0.5 truncate">{t.groupName} • {t.startDay} → {endStr}</div>
+                          </div>
+                          <div className="flex flex-col items-end gap-1.5 shrink-0 min-w-[75px]">
+                            <div className="flex justify-end w-full">
+                              {getStatusBadge(t.status)}
+                            </div>
+                            {!isCancelled && (
+                              <div
+                                className={`text-[9px] font-black uppercase tracking-widest ${t.confirmedGuides?.includes(detailsGuide.name) ? "text-[#1D3663]" : "text-[#F3796A]"
+                                  }`}
+                              >
+                                {t.confirmedGuides?.includes(detailsGuide.name) ? "Accepted" : "Waiting"}
+                              </div>
+                            )}
+                            <button
+                              onClick={() => {
+                                setGuideDetailsModalId(null);
+                                handleOpenBookingManager(t);
+                              }}
+                              className="bg-[#1D3663] text-white w-full py-1.5 rounded-md text-[10px] font-black uppercase tracking-widest hover:brightness-95 transition-all shadow-sm flex items-center justify-center leading-none mt-1"
+                            >
+                              Manage
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* RIGHT PANE: Busy Dates Management */}
+              <div className="w-[65%] flex flex-col bg-gray-50/50">
+                {/* Enforced equal header heights */}
+                <div className="p-6 shrink-0 border-b border-[#C4E8FF]/50 bg-white h-[176px] flex flex-col justify-between">
+                  <h4 className="text-sm font-black text-[#1D3663] uppercase tracking-wide flex items-center gap-2"><Calendar className="w-4 h-4 text-red-500" /> Busy Dates Management</h4>
+                  <div className="bg-red-50/50 border border-red-100 rounded-2xl p-4">
+                    <label className="text-[9px] font-black text-red-800/60 uppercase tracking-widest mb-2 block">Add New Busy Period</label>
+                    <div className="flex items-end gap-3">
+                      <div className="flex-1 space-y-1">
+                        <span className="text-[10px] font-bold text-[#1D3663]/70">From</span>
+                        <input type="date" value={newBusyFrom} onChange={(e) => setNewBusyFrom(e.target.value)} className="w-full text-xs bg-white border border-[#C4E8FF] rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none" />
+                      </div>
+                      <div className="flex-1 space-y-1">
+                        <span className="text-[10px] font-bold text-[#1D3663]/70">To</span>
+                        <input type="date" value={newBusyTo} onChange={(e) => setNewBusyTo(e.target.value)} className="w-full text-xs bg-white border border-[#C4E8FF] rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none" />
+                      </div>
+                      <button onClick={handleAddBusyDate} className="bg-[#1D3663] text-white px-6 py-2.5 rounded-xl text-xs font-bold shadow-md hover:brightness-95 transition-all h-[38px]">
+                        Add Block
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* MOVED HEADER: Pulled outside of the scrollable section to prevent any scrolling overlapping issues */}
+                <div className="flex items-center justify-between bg-gray-100/80 px-6 py-2.5 border-b border-gray-200 shrink-0">
+                  <label className="text-[10px] font-black text-[#1D3663]/55 uppercase tracking-widest">Blocks recorded in {detailsModalYear}</label>
+                  <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-md">{busyDatesInYear.length} Blocks</span>
+                </div>
+
+                <div className="flex-1 overflow-auto p-6 pt-4 space-y-3">
+                  {busyDatesInYear.length === 0 ? (
+                    <div className="text-center py-10 text-[#1D3663]/45 font-bold italic text-sm">No busy dates recorded for this year.</div>
+                  ) : (
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 pb-10">
+                      {busyDatesInYear.map((b: any) => (
+                        <div key={b.id} className="flex items-center justify-between bg-red-50/80 px-4 py-3 rounded-2xl border border-red-200 shadow-sm hover:shadow transition-shadow">
+                          <div className="flex items-center gap-3">
+                            <div className="w-2 h-2 rounded-full bg-violet-500"></div>
+                            <span className="text-xs font-black text-red-700">
+                              {b.from} <span className="text-red-400 mx-1">→</span> {b.to}
+                            </span>
+                          </div>
+                          <button onClick={() => handleRemoveBusyDate(b.id, detailsGuide.id)} className="text-red-500 hover:bg-red-200 p-2 rounded-xl transition-colors" title="Remove block">
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* --- Delete Busy Confirmation --- */}
+      {pendingDeleteBusyId && (
+        <div className="absolute inset-0 z-[130] bg-[#1D3663]/30 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full text-center flex flex-col gap-6 animate-in zoom-in border border-[#C4E8FF]">
+            <div className="mx-auto w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+              <AlertCircle className="w-6 h-6 text-red-600" />
+            </div>
+            <div>
+              <h4 className="text-base font-black text-[#1D3663]">Confirm deletion</h4>
+              <p className="text-sm text-[#1D3663]/65 mt-2 font-medium">Are you sure you want to delete this busy date block?</p>
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => { setPendingDeleteBusyId(null); setPendingDeleteBusyGuideId(null); }} className="flex-1 py-3 bg-white hover:bg-[#C4E8FF]/20 text-[#1D3663] font-bold rounded-xl transition-colors border border-[#C4E8FF]">Cancel</button>
+              <button onClick={async () => {
+                if (pendingDeleteBusyGuideId && pendingDeleteBusyId) {
+                  const nextTimelineData = await mockApi.removeGuideBusyDate(pendingDeleteBusyGuideId, pendingDeleteBusyId);
+                  applyTimelineData(nextTimelineData);
+                }
+                setPendingDeleteBusyId(null); setPendingDeleteBusyGuideId(null);
+              }} className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-black rounded-xl transition-colors">Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingGuideStatusChange && (
+        <div className="absolute inset-0 z-[131] bg-[#1D3663]/30 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full text-center flex flex-col gap-6 animate-in zoom-in border border-[#C4E8FF]">
+            <div className="mx-auto w-12 h-12 bg-[#C4E8FF]/30 rounded-full flex items-center justify-center">
+              <AlertCircle className="w-6 h-6 text-[#F3796A]" />
+            </div>
+            <div>
+              <h4 className="text-base font-black text-[#1D3663]">Confirm guide status</h4>
+              <p className="text-sm text-[#1D3663]/65 mt-2 font-medium">
+                Change <strong>{pendingGuideStatusChange.guideName}</strong> to{" "}
+                <strong>{pendingGuideStatusChange.isConfirmed ? "Waiting" : "Accepted"}</strong> for this booking?
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setPendingGuideStatusChange(null)}
+                className="flex-1 py-3 bg-white hover:bg-[#C4E8FF]/20 text-[#1D3663] font-bold rounded-xl transition-colors border border-[#C4E8FF]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmGuideStatusChange}
+                className="flex-1 py-3 bg-[#F3796A] hover:brightness-95 text-white font-black rounded-xl transition-colors"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {guideTimingModalState && (
+        <div className="absolute inset-0 z-[132] bg-[#1D3663]/35 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in">
+          <div className="bg-white rounded-[28px] shadow-2xl w-full max-w-2xl flex flex-col max-h-[85vh] overflow-hidden border border-[#C4E8FF]">
+            <div className="px-6 py-4 border-b border-[#C4E8FF] flex items-center justify-between bg-white">
+              <div>
+                <h3 className="text-base font-black text-[#1D3663] uppercase tracking-tight">{guideTimingModalState.title}</h3>
+                <p className="text-[9px] font-bold text-[#1D3663]/55 uppercase tracking-widest mt-1">
+                  {guideTimingModalState.guideName} • {guideTimingModalState.bookingId}
+                </p>
+              </div>
+              <button
+                onClick={handleCloseGuideTimingModal}
+                className="p-2 hover:bg-[#C4E8FF]/25 rounded-full transition-colors text-[#1D3663]/55"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4 overflow-auto bg-[#C4E8FF]/10">
+              <div className="rounded-2xl border border-[#C4E8FF] bg-white px-4 py-3 text-sm font-medium text-[#1D3663]/75">
+                {guideTimingModalState.description}
+              </div>
+              {guideTimingModalState.drafts.map((draft) => (
+                <div key={draft.date} className="rounded-2xl border border-[#C4E8FF] bg-white p-4">
+                  <div className="flex items-center gap-2 text-[#1D3663] font-black text-sm">
+                    <Clock3 className="w-4 h-4 text-[#F3796A]" />
+                    {draft.date}
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <label className="space-y-2">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-[#1D3663]/55">Start hour</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="23"
+                        value={draft.startHour}
+                        onChange={(event) => handleGuideTimingDraftChange(draft.date, "startHour", event.target.value)}
+                        className="w-full rounded-xl border border-[#C4E8FF] px-3 py-2 text-sm font-bold text-[#1D3663] outline-none focus:ring-2 focus:ring-[#F3796A]"
+                      />
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-[#1D3663]/55">End hour</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="24"
+                        value={draft.endHour}
+                        onChange={(event) => handleGuideTimingDraftChange(draft.date, "endHour", event.target.value)}
+                        className="w-full rounded-xl border border-[#C4E8FF] px-3 py-2 text-sm font-bold text-[#1D3663] outline-none focus:ring-2 focus:ring-[#F3796A]"
+                      />
+                    </label>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="px-6 py-4 border-t border-[#C4E8FF] bg-white flex gap-3">
+              <button
+                onClick={handleCloseGuideTimingModal}
+                className="flex-1 py-3 bg-white hover:bg-[#C4E8FF]/20 text-[#1D3663] font-bold rounded-xl transition-colors border border-[#C4E8FF]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveGuideTiming}
+                className="flex-1 py-3 bg-[#1D3663] hover:brightness-95 text-white font-black rounded-xl transition-colors"
+              >
+                {guideTimingModalState.submitLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {emailComposerState && (
+        <div className="absolute inset-0 z-[133] bg-[#1D3663]/35 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in">
+          <div className="bg-white rounded-[28px] shadow-2xl w-full max-w-3xl flex flex-col max-h-[85vh] overflow-hidden border border-[#C4E8FF]">
+            <div className="px-6 py-4 border-b border-[#C4E8FF] flex items-center justify-between bg-white">
+              <div>
+                <h3 className="text-base font-black text-[#1D3663] uppercase tracking-tight">Email Template</h3>
+                <p className="text-[9px] font-bold text-[#1D3663]/55 uppercase tracking-widest mt-1">
+                  {emailComposerState.bookingRef} • {emailComposerState.guideName}
+                </p>
+              </div>
+              <button
+                onClick={() => setEmailComposerState(null)}
+                className="p-2 hover:bg-[#C4E8FF]/25 rounded-full transition-colors text-[#1D3663]/55"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 overflow-auto">
+              <div className="grid grid-cols-1 md:grid-cols-[160px_minmax(0,1fr)] gap-3">
+                <label className="text-[10px] font-black uppercase tracking-widest text-[#1D3663]/55 md:pt-3">
+                  Record Date
+                </label>
+                <input
+                  type="date"
+                  value={emailComposerState.date}
+                  onChange={(event) =>
+                    setEmailComposerState((prev) => (prev ? { ...prev, date: event.target.value } : prev))
+                  }
+                  className="w-full border border-[#C4E8FF] rounded-xl px-4 py-2.5 text-sm font-medium text-[#1D3663] outline-none focus:ring-1 focus:ring-[#F3796A]"
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-[160px_minmax(0,1fr)] gap-3">
+                <label className="text-[10px] font-black uppercase tracking-widest text-[#1D3663]/55 md:pt-3">
+                  Subject
+                </label>
+                <input
+                  type="text"
+                  value={emailComposerState.subject}
+                  onChange={(event) =>
+                    setEmailComposerState((prev) => (prev ? { ...prev, subject: event.target.value } : prev))
+                  }
+                  className="w-full border border-[#C4E8FF] rounded-xl px-4 py-2.5 text-sm font-medium text-[#1D3663] outline-none focus:ring-1 focus:ring-[#F3796A]"
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-[160px_minmax(0,1fr)] gap-3">
+                <label className="text-[10px] font-black uppercase tracking-widest text-[#1D3663]/55 md:pt-3">
+                  Template
+                </label>
+                <textarea
+                  rows={12}
+                  value={emailComposerState.body}
+                  onChange={(event) =>
+                    setEmailComposerState((prev) => (prev ? { ...prev, body: event.target.value } : prev))
+                  }
+                  className="w-full border border-[#C4E8FF] rounded-2xl px-4 py-3 text-sm font-medium text-[#1D3663] outline-none focus:ring-1 focus:ring-[#F3796A]"
+                />
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-[#C4E8FF] flex items-center justify-between gap-3 bg-white">
+              <span className="text-[10px] font-black uppercase tracking-widest text-[#1D3663]/50">
+                {emailComposerState.actionLabel
+                  ? `Last action: ${emailComposerState.actionLabel}`
+                  : "No email action recorded yet"}
+              </span>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setEmailComposerState(null)}
+                  className="px-4 py-2 bg-white border border-[#C4E8FF] text-[#1D3663] rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-[#C4E8FF]/20 transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleSaveEmailRecord("draft")}
+                  className="px-4 py-2 bg-[#C4E8FF]/20 border border-[#C4E8FF] text-[#1D3663] rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-[#C4E8FF]/35 transition-all"
+                >
+                  Save Draft
+                </button>
+                <button
+                  onClick={() => handleSaveEmailRecord("sent")}
+                  className="px-4 py-2 bg-[#1D3663] text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:brightness-95 transition-all"
+                >
+                  Send Email
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MAIN FULL-SCREEN ASSIGN MODAL (Item Selection Board) --- */}
+      {activeAssignmentBooking && (
+        <TimelineBookingAssignmentModal
+          activeAssignmentBooking={activeAssignmentBooking}
+          guidesData={guidesData}
+          emailRecords={emailRecords}
+          dailyColumns={dailyColumns}
+          selectedItemsToAssign={selectedItemsToAssign}
+          showGuideSelector={showGuideSelector}
+          guideSearchTerm={guideSearchTerm}
+          filteredGuidesForModal={filteredGuidesForModal}
+          selectedGuideId={selectedGuideId}
+          showUnassignDialog={showUnassignDialog}
+          pendingUnassignGuide={pendingUnassignGuide}
+          canUnassignSelectedItems={
+            selectedAssignedGuideNames.hasOnlyAssignedItems && selectedAssignedGuideNames.guideNames.length === 1
+          }
+          selectedAssignedGuideLabel={
+            selectedAssignedGuideNames.guideNames.length === 1
+              ? selectedAssignedGuideNames.guideNames[0]
+              : selectedAssignedGuideNames.guideNames.length > 1
+                ? "Mixed guides"
+                : null
+          }
+          getGuideAvailability={getGuideAvailability}
+          onBack={handleCloseBookingManager}
+          onCloseBoard={handleDismissBookingManager}
+          onSelectAll={handleSelectAll}
+          onToggleGuideConfirmation={(guideName, isConfirmed) =>
+            handleRequestGuideStatusChange(activeAssignmentBooking.id, guideName, isConfirmed)
+          }
+          onStartUnassign={handleStartUnassignGuide}
+          onUnassignSelectedItems={handleUnassignSelectedItems}
+          onOpenEmailComposer={handleOpenEmailComposer}
+          onOpenGuideTimingEditor={openGuideTimingEditor}
+          onSelectDay={handleSelectDay}
+          onItemMouseDown={handleItemMouseDown}
+          onItemMouseEnter={handleItemMouseEnter}
+          onItemTimeSlotChange={handleItemTimeSlotChange}
+          onOpenGuideSelector={() => setShowGuideSelector(true)}
+          onCloseGuideSelector={() => setShowGuideSelector(false)}
+          onGuideSearchTermChange={setGuideSearchTerm}
+          onSelectGuide={handleSelectGuide}
+          onConfirmAssignment={handleConfirmAssignment}
+          onClearSelectedItems={handleClearSelectedItems}
+          onCancelUnassign={handleCancelUnassignGuide}
+          onConfirmUnassign={handleConfirmUnassignGuide}
+        />
+      )}
+
+    </div>
+  );
+}
+

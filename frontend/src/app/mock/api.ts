@@ -1,0 +1,502 @@
+import type {
+  CityOption,
+  GuideDirectoryItem,
+  GuideEmailRecord,
+  GuideFormData,
+  GuideProfileData,
+  ServiceDayPart,
+  TimelineData,
+  WhtType,
+} from "./types";
+
+export const GUIDE_DIRECTORY_TAGS = ["CEO", "CEO-NAT", "CEO-GEO", "LUXE", "HMA", "RBT", "NRV"];
+export const GUIDE_FORM_TAGS = [...GUIDE_DIRECTORY_TAGS, "MICE", "VIP-CORP"];
+export const LANGUAGE_OPTIONS = ["English", "French", "Spanish", "German", "Italian", "Mandarin", "Japanese"];
+export const PROFICIENCY_LEVELS = ["Native", "Fluent", "Intermediate", "Basic"];
+export const SERVICE_DAY_PARTS: ServiceDayPart[] = ["full-day", "morning", "afternoon", "evening"];
+
+const DEFAULT_AVATAR =
+  "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&h=400&fit=crop";
+
+type ApiGuideDirectoryItem = {
+  id: number;
+  name: string;
+  status: string;
+  partTime: boolean;
+  rating: number;
+  tags: string[];
+};
+
+type ApiGuideLanguage = {
+  language: string;
+  level: string;
+};
+
+type ApiGuideCertification = {
+  id: string;
+  name: string;
+  expiry?: string | null;
+  org?: string;
+};
+
+type ApiGuideDetail = {
+  id: number;
+  name: string;
+  email: string;
+  phone: string;
+  dateOfBirth?: string | null;
+  city: string;
+  country: string;
+  avatar: string;
+  status: string;
+  partTime: boolean;
+  rating: number;
+  whtType: string;
+  whtTax: number;
+  tourRecord: string;
+  licenseName: string;
+  startDateWithUs?: string | null;
+  historicalTours: number;
+  averageRating: number;
+  yearsExperience: number;
+  tags: string[];
+  languages: ApiGuideLanguage[];
+  certifications: ApiGuideCertification[];
+  bio: string[];
+};
+
+type ApiGuideEmailRecord = {
+  bookingId: string;
+  guideId: number;
+  status: "draft" | "sent";
+  date?: string | null;
+  subject: string;
+  body: string;
+};
+
+type ApiGuideTimeException = {
+  id: string;
+  bookingId: string;
+  guideId: number;
+  date?: string | null;
+  startHour: number;
+  endHour: number;
+};
+
+type ApiBusyDate = {
+  id: string;
+  from?: string | null;
+  to?: string | null;
+};
+
+type ApiTimelineGuide = {
+  id: number;
+  name: string;
+  tags: string[];
+  busyDates: ApiBusyDate[];
+  timeExceptions: ApiGuideTimeException[];
+};
+
+type ApiTimelineBooking = {
+  id: string;
+  ref: string;
+  startDay?: string | null;
+  duration: number;
+  client: string;
+  groupName: string;
+  tourName: string;
+  status: string;
+  country?: string | null;
+  assignedGuides: string[];
+  confirmedGuides: string[];
+};
+
+type ApiTimelineData = {
+  bookingsData: ApiTimelineBooking[];
+  guidesData: ApiTimelineGuide[];
+  itemAssignments: Record<string, number>;
+  itemTimeSlots: Record<string, string>;
+  emailRecords: Record<string, ApiGuideEmailRecord>;
+  guideTimeExceptions: ApiGuideTimeException[];
+};
+
+type TimelineQuery = {
+  from?: string;
+  to?: string;
+};
+
+const normalizeTag = (value: string) => value.trim().toUpperCase();
+const formatLongDate = (value: string) =>
+  new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric", year: "numeric" }).format(
+    new Date(`${value}T00:00:00`),
+  );
+
+const getAge = (value: string) => {
+  const birthDate = new Date(`${value}T00:00:00`);
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const monthDelta = today.getMonth() - birthDate.getMonth();
+  const dayDelta = today.getDate() - birthDate.getDate();
+  if (monthDelta < 0 || (monthDelta === 0 && dayDelta < 0)) {
+    age -= 1;
+  }
+  return age;
+};
+
+const splitBiography = (value: string) => {
+  const parts = value
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts : ["Guide profile synced from backend."];
+};
+
+const ensureGuideStatus = (value: string) => (value === "Inactive" ? "Inactive" : "Active");
+const ensureWhtType = (value: string): WhtType => (value === "Non-resident" ? "Non-resident" : "Resident");
+const ensureServiceDayPart = (value: string): ServiceDayPart => {
+  if (value === "morning" || value === "afternoon" || value === "evening") return value;
+  return "full-day";
+};
+
+const buildApiUrl = (path: string) => {
+  const baseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim();
+  if (!baseUrl) return path;
+  return `${baseUrl.replace(/\/$/, "")}${path}`;
+};
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(buildApiUrl(path), {
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+    ...init,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request failed: ${response.status}`);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return (await response.json()) as T;
+}
+
+export const getWhtTaxByType = (type: WhtType) => (type === "Resident" ? 10.21 : 20.42);
+export const buildGuideEmailKey = (bookingId: string, guideId: number) => `${bookingId}-${guideId}`;
+
+const mapGuideProfile = (guide: ApiGuideDetail): GuideProfileData => ({
+  id: guide.id,
+  name: guide.name,
+  email: guide.email ?? "",
+  phone: guide.phone ?? "",
+  dateOfBirth: guide.dateOfBirth ? `${formatLongDate(guide.dateOfBirth)} (${getAge(guide.dateOfBirth)} yrs)` : "N/A",
+  location: [guide.city, guide.country].filter(Boolean).join(", "),
+  avatar: guide.avatar || DEFAULT_AVATAR,
+  status: ensureGuideStatus(guide.status),
+  fullTime: !guide.partTime,
+  whtSummary: `${ensureWhtType(guide.whtType)} • ${Number(guide.whtTax ?? 0).toFixed(2)}%`,
+  tags: guide.tags ?? [],
+  languages: (guide.languages ?? []).map((language) => ({
+    language: language.language,
+    level: language.level,
+  })),
+  certifications: (guide.certifications ?? []).map((certification) => ({
+    id: certification.id,
+    name: certification.name,
+    expiry: certification.expiry ?? undefined,
+    org: certification.org ?? undefined,
+  })),
+  tourRecord: guide.tourRecord ?? "",
+  stats: {
+    totalTours: guide.historicalTours ?? 0,
+    avgRating: Number(guide.averageRating ?? 0),
+    yearsExp: `${guide.yearsExperience ?? 0}+`,
+  },
+  bio: guide.bio?.length ? guide.bio : ["Guide profile synced from backend."],
+  upcomingTours: [],
+});
+
+const mapGuideFormData = (guide?: ApiGuideDetail | null): GuideFormData => ({
+  id: guide?.id,
+  name: guide?.name ?? "",
+  email: guide?.email ?? "",
+  phone: guide?.phone ?? "",
+  dateOfBirth: guide?.dateOfBirth ?? "",
+  city: guide?.city ?? "",
+  licenseName: guide?.licenseName ?? "",
+  startDateWithUs: guide?.startDateWithUs ?? "",
+  tourRecord: guide?.tourRecord ?? "",
+  whtType: ensureWhtType(guide?.whtType ?? "Resident"),
+  whtTax: Number(guide?.whtTax ?? getWhtTaxByType("Resident")),
+  status: ensureGuideStatus(guide?.status ?? "Active"),
+  tags: guide?.tags ?? [],
+  languages:
+    guide?.languages?.map((language) => ({
+      language: language.language,
+      proficiency: language.level,
+    })) ?? [{ language: "English", proficiency: "Intermediate" }],
+  biography: guide?.bio?.join("\n\n") ?? "",
+});
+
+const mapTimelineData = (data: ApiTimelineData): TimelineData => ({
+  bookingsData: (data.bookingsData ?? []).map((booking) => ({
+    id: booking.id,
+    ref: booking.ref,
+    startDay: booking.startDay ?? "",
+    duration: booking.duration,
+    client: booking.client,
+    groupName: booking.groupName,
+    tourName: booking.tourName,
+    status: booking.status,
+    country: booking.country ?? undefined,
+    assignedGuides: booking.assignedGuides ?? [],
+    confirmedGuides: booking.confirmedGuides ?? [],
+  })),
+  guidesData: (data.guidesData ?? []).map((guide) => ({
+    id: guide.id,
+    name: guide.name,
+    tags: guide.tags ?? [],
+    busyDates: (guide.busyDates ?? []).map((busyDate) => ({
+      id: busyDate.id,
+      from: busyDate.from ?? "",
+      to: busyDate.to ?? "",
+    })),
+    timeExceptions: (guide.timeExceptions ?? []).map((exception) => ({
+      id: exception.id,
+      bookingId: exception.bookingId,
+      guideId: exception.guideId,
+      date: exception.date ?? "",
+      startHour: exception.startHour,
+      endHour: exception.endHour,
+    })),
+  })),
+  itemAssignments: data.itemAssignments ?? {},
+  itemTimeSlots: Object.fromEntries(
+    Object.entries(data.itemTimeSlots ?? {}).map(([itemId, slot]) => [itemId, ensureServiceDayPart(slot)]),
+  ),
+  emailRecords: Object.fromEntries(
+    Object.entries(data.emailRecords ?? {}).map(([key, record]) => [
+      key,
+      {
+        status: record.status === "sent" ? "sent" : "draft",
+        date: record.date ?? "",
+        subject: record.subject ?? "",
+        body: record.body ?? "",
+      },
+    ]),
+  ),
+  guideTimeExceptions: (data.guideTimeExceptions ?? []).map((exception) => ({
+    id: exception.id,
+    bookingId: exception.bookingId,
+    guideId: exception.guideId,
+    date: exception.date ?? "",
+    startHour: exception.startHour,
+    endHour: exception.endHour,
+  })),
+});
+
+export const mockApi = {
+  async getGuides(): Promise<GuideDirectoryItem[]> {
+    return request<ApiGuideDirectoryItem[]>("/api/guides");
+  },
+
+  async getGuideName(guideId: number): Promise<string | null> {
+    const guide = await request<ApiGuideDetail>(`/api/guides/${guideId}`);
+    return guide?.name ?? null;
+  },
+
+  async getGuideProfile(guideId: number): Promise<GuideProfileData | null> {
+    try {
+      const guide = await request<ApiGuideDetail>(`/api/guides/${guideId}`);
+      return mapGuideProfile(guide);
+    } catch {
+      return null;
+    }
+  },
+
+  async getGuideFormData(guideId?: number): Promise<GuideFormData> {
+    if (typeof guideId !== "number") {
+      return mapGuideFormData(null);
+    }
+
+    try {
+      const guide = await request<ApiGuideDetail>(`/api/guides/${guideId}`);
+      return mapGuideFormData(guide);
+    } catch {
+      return mapGuideFormData(null);
+    }
+  },
+
+  async getGuideClientTags(): Promise<string[]> {
+    const tags = await request<string[]>("/api/guides/meta/tags");
+    return tags.map(normalizeTag).sort();
+  },
+
+  async createGuideClientTag(tag: string): Promise<string[]> {
+    const normalizedTag = normalizeTag(tag);
+    if (!normalizedTag) {
+      return this.getGuideClientTags();
+    }
+
+    const tags = await request<string[]>("/api/guides/meta/tags", {
+      method: "POST",
+      body: JSON.stringify({ tag: normalizedTag }),
+    });
+    return tags.map(normalizeTag).sort();
+  },
+
+  async getCityOptions(): Promise<CityOption[]> {
+    return request<CityOption[]>("/api/guides/meta/cities");
+  },
+
+  async saveGuide(formData: GuideFormData): Promise<number> {
+    const payload = {
+      name: formData.name.trim(),
+      email: formData.email.trim(),
+      phone: formData.phone.trim(),
+      dateOfBirth: formData.dateOfBirth || null,
+      city: formData.city.trim(),
+      country: "",
+      avatar: DEFAULT_AVATAR,
+      status: formData.status,
+      partTime: false,
+      rating: 0,
+      whtType: formData.whtType,
+      whtTax: Number(formData.whtTax),
+      tourRecord: formData.tourRecord.trim(),
+      licenseName: formData.licenseName.trim(),
+      startDateWithUs: formData.startDateWithUs || null,
+      historicalTours: 0,
+      averageRating: 0,
+      yearsExperience: 0,
+      tags: formData.tags.map(normalizeTag),
+      languages: formData.languages
+        .filter((language) => language.language && language.proficiency)
+        .map((language) => ({
+          language: language.language,
+          level: language.proficiency,
+        })),
+      certifications: [],
+      bio: splitBiography(formData.biography),
+    };
+
+    if (typeof formData.id === "number") {
+      await request<void>(`/api/guides/${formData.id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      return formData.id;
+    }
+
+    const result = await request<{ id: number }>("/api/guides", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    return result.id;
+  },
+
+  async getTimelineData(query?: TimelineQuery): Promise<TimelineData> {
+    const searchParams = new URLSearchParams();
+    if (query?.from) searchParams.set("from", query.from);
+    if (query?.to) searchParams.set("to", query.to);
+    const suffix = searchParams.size > 0 ? `?${searchParams.toString()}` : "";
+    const timeline = await request<ApiTimelineData>(`/api/timeline${suffix}`);
+    return mapTimelineData(timeline);
+  },
+
+  async setBookingGuideConfirmation(bookingId: string, guideName: string, confirmed: boolean): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>("/api/timeline/booking-guide-confirmation", {
+      method: "POST",
+      body: JSON.stringify({ bookingId, guideName, confirmed }),
+    });
+    return mapTimelineData(timeline);
+  },
+
+  async addGuideBusyDate(guideId: number, from: string, to: string): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>("/api/timeline/guide-busy-dates", {
+      method: "POST",
+      body: JSON.stringify({ guideId, from, to }),
+    });
+    return mapTimelineData(timeline);
+  },
+
+  async removeGuideBusyDate(guideId: number, busyDateId: string): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>(`/api/timeline/guide-busy-dates/${guideId}/${busyDateId}`, {
+      method: "DELETE",
+    });
+    return mapTimelineData(timeline);
+  },
+
+  async setBookingItemTimeSlot(itemId: string, slot: ServiceDayPart): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>("/api/timeline/booking-item-time-slot", {
+      method: "POST",
+      body: JSON.stringify({ itemId, slot }),
+    });
+    return mapTimelineData(timeline);
+  },
+
+  async assignBookingItems(bookingId: string, guideId: number, itemIds: string[]): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>("/api/timeline/assign-booking-items", {
+      method: "POST",
+      body: JSON.stringify({ bookingId, guideId, itemIds }),
+    });
+    return mapTimelineData(timeline);
+  },
+
+  async unassignBookingItems(bookingId: string, itemIds: string[]): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>("/api/timeline/unassign-booking-items", {
+      method: "POST",
+      body: JSON.stringify({ bookingId, itemIds }),
+    });
+    return mapTimelineData(timeline);
+  },
+
+  async unassignGuideFromBooking(bookingId: string, guideName: string): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>(
+      `/api/timeline/bookings/${encodeURIComponent(bookingId)}/guides/${encodeURIComponent(guideName)}`,
+      {
+        method: "DELETE",
+      },
+    );
+    return mapTimelineData(timeline);
+  },
+
+  async setGuideEmailRecord(bookingId: string, guideId: number, payload: GuideEmailRecord): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>("/api/timeline/guide-email-record", {
+      method: "POST",
+      body: JSON.stringify({
+        bookingId,
+        guideId,
+        status: payload.status,
+        date: payload.date || null,
+        subject: payload.subject,
+        body: payload.body,
+      }),
+    });
+    return mapTimelineData(timeline);
+  },
+
+  async setGuideBookingTimeExceptions(
+    bookingId: string,
+    guideId: number,
+    entries: Array<{ date: string; startHour: number; endHour: number }>,
+  ): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>("/api/timeline/guide-time-exceptions", {
+      method: "POST",
+      body: JSON.stringify({
+        bookingId,
+        guideId,
+        entries: entries.map((entry) => ({
+          date: entry.date,
+          startHour: entry.startHour,
+          endHour: entry.endHour,
+        })),
+      }),
+    });
+    return mapTimelineData(timeline);
+  },
+};
