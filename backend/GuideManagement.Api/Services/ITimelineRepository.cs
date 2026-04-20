@@ -4,7 +4,19 @@ namespace GuideManagement.Api.Services;
 
 public interface ITimelineRepository
 {
-    Task<TimelineDataDto> GetTimelineAsync(DateOnly? from, DateOnly? to, CancellationToken cancellationToken);
+    Task<TimelineDataDto> GetTimelineAsync(
+        DateOnly? from,
+        DateOnly? to,
+        int? countryXid,
+        string? search,
+        string? client,
+        string? country,
+        string? guide,
+        string? series,
+        string? loadSeries,
+        int? seriesSkip,
+        int? seriesTake,
+        CancellationToken cancellationToken);
     Task<TimelineDataDto> SetBookingGuideConfirmationAsync(BookingGuideConfirmationRequest request, CancellationToken cancellationToken);
     Task<TimelineDataDto> AddGuideBusyDateAsync(GuideBusyDateRequest request, CancellationToken cancellationToken);
     Task<TimelineDataDto> RemoveGuideBusyDateAsync(int guideId, string busyDateId, CancellationToken cancellationToken);

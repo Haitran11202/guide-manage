@@ -1,6 +1,6 @@
-namespace GuideManagement.Api.Models.Timeline;
+namespace GuideManagement.Api.Models.Bookings;
 
-public sealed class TimelineBookingDto
+public sealed class BookingsBookingDto
 {
     public string Id { get; init; } = string.Empty;
     public string Series { get; init; } = string.Empty;

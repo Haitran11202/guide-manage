@@ -1,6 +1,6 @@
-import type { ReactNode } from "react";
-import { ChevronDown, ChevronRight, Search } from "lucide-react";
-import type { TimelineBooking } from "../../mock/types";
+import { useMemo, useRef, type ReactNode, type UIEvent } from "react";
+import { ChevronDown, ChevronRight, LoaderCircle, Search } from "lucide-react";
+import type { TimelineBooking, TimelineBookingSeries } from "../../mock/types";
 
 type SeriesFilter = "all" | "series" | "noseries";
 
@@ -16,6 +16,9 @@ type SeriesStats = {
 type TimelineBookingsTabProps = {
   allClients: string[];
   allCountries: string[];
+  isLoading: boolean;
+  loadingSeries: string[];
+  loadingManageBookingId: string | null;
   modalSearchTerm: string;
   modalFilterClient: string;
   modalFilterCountry: string;
@@ -24,8 +27,8 @@ type TimelineBookingsTabProps = {
   modalFilterDateTo: string;
   modalFilterSeries: SeriesFilter;
   groupedBySeries: Record<string, TimelineBooking[]>;
+  bookingSeries: TimelineBookingSeries[];
   expandedSeries: Set<string>;
-  getSeriesStats: (bookings: TimelineBooking[]) => SeriesStats;
   getStatusBadge: (status: string) => ReactNode;
   onSearchTermChange: (value: string) => void;
   onFilterClientChange: (value: string) => void;
@@ -38,11 +41,15 @@ type TimelineBookingsTabProps = {
   onToggleSeriesAccordion: (series: string) => void;
   onToggleGuideConfirmation: (bookingId: string, guideName: string, isConfirmed: boolean) => void;
   onManageBooking: (booking: TimelineBooking) => void;
+  onLoadMoreSeries: (series: string, loadedCount: number) => void;
 };
 
 export function TimelineBookingsTab({
   allClients,
   allCountries,
+  isLoading,
+  loadingSeries,
+  loadingManageBookingId,
   modalSearchTerm,
   modalFilterClient,
   modalFilterCountry,
@@ -51,8 +58,8 @@ export function TimelineBookingsTab({
   modalFilterDateTo,
   modalFilterSeries,
   groupedBySeries,
+  bookingSeries,
   expandedSeries,
-  getSeriesStats,
   getStatusBadge,
   onSearchTermChange,
   onFilterClientChange,
@@ -65,7 +72,11 @@ export function TimelineBookingsTab({
   onToggleSeriesAccordion,
   onToggleGuideConfirmation,
   onManageBooking,
+  onLoadMoreSeries,
 }: TimelineBookingsTabProps) {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const tableScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
   const hasActiveFilters =
     Boolean(modalFilterCountry) ||
     Boolean(modalFilterClient) ||
@@ -74,10 +85,30 @@ export function TimelineBookingsTab({
     Boolean(modalFilterDateFrom) ||
     Boolean(modalFilterDateTo) ||
     modalFilterSeries !== "all";
-  console.log("TimeLines");
-  
+
+  const seriesEntries = useMemo(
+    () => {
+      const orderedSeries = bookingSeries.map((meta) => meta.series);
+      const extras = Object.keys(groupedBySeries).filter((series) => !orderedSeries.includes(series));
+      return [...orderedSeries, ...extras].map((series) => [series, groupedBySeries[series] ?? []] as const);
+    },
+    [bookingSeries, groupedBySeries],
+  );
+
+  const handleSeriesScroll = (series: string, loadedCount: number, totalCount: number) => (event: UIEvent<HTMLDivElement>) => {
+    if (loadedCount >= totalCount || loadingSeries.includes(series)) {
+      return;
+    }
+
+    const target = event.currentTarget;
+    const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
+    if (remaining <= 48) {
+      onLoadMoreSeries(series, loadedCount);
+    }
+  };
+
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-[#C4E8FF]/10">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#C4E8FF]/10">
       <div className="px-6 py-4 border-b border-[#C4E8FF] bg-white shrink-0 flex items-center gap-3 flex-wrap shadow-sm z-10 relative">
         <div className="relative w-64">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#1D3663]/45" />
@@ -184,13 +215,32 @@ export function TimelineBookingsTab({
         )}
       </div>
 
-      <div className="flex-1 overflow-auto p-6 space-y-4">
-        {Object.keys(groupedBySeries).length === 0 ? (
+      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto p-6 space-y-4 relative">
+        {isLoading && (
+          <div className="absolute inset-x-6 top-6 bottom-6 z-20 flex items-center justify-center rounded-2xl border border-[#C4E8FF] bg-white/88 backdrop-blur-[2px]">
+            <div className="flex items-center gap-3 rounded-2xl border border-[#C4E8FF] bg-white px-5 py-3 text-sm font-black text-[#1D3663] shadow-[0_18px_40px_rgba(29,54,99,0.12)]">
+              <LoaderCircle className="h-5 w-5 animate-spin text-[#F3796A]" />
+              <span>Loading bookings...</span>
+            </div>
+          </div>
+        )}
+        {seriesEntries.length === 0 ? (
           <div className="text-center text-[#1D3663]/55 py-10 font-bold">No matching bookings found.</div>
         ) : (
-          Object.entries(groupedBySeries).map(([series, bookingsInSeries]) => {
+          seriesEntries.map(([series, bookingsInSeries]) => {
             const isExpanded = expandedSeries.has(series);
-            const stats = getSeriesStats(bookingsInSeries);
+            const stats = bookingSeries.find((item) => item.series === series) ?? {
+              series,
+              total: bookingsInSeries.length,
+              assigned: bookingsInSeries.filter((item) => item.assignedGuides.length > 0).length,
+              notAssigned: bookingsInSeries.filter((item) => item.assignedGuides.length === 0).length,
+              cancelled: bookingsInSeries.filter((item) => item.status.toLowerCase().includes("cancel")).length,
+              onRequest: bookingsInSeries.filter((item) => item.status.toLowerCase().includes("request")).length,
+              confirmed: bookingsInSeries.filter((item) =>
+                ["confirmed", "paid", "book", "booked"].includes(item.status.toLowerCase()),
+              ).length,
+            };
+            const hasMoreBookings = bookingsInSeries.length < stats.total;
 
             return (
               <div key={series} className="bg-white border border-[#C4E8FF] rounded-2xl overflow-hidden shadow-sm transition-all">
@@ -237,9 +287,16 @@ export function TimelineBookingsTab({
 
                 {isExpanded && (
                   <div className="bg-white border-t border-[#C4E8FF] overflow-x-auto">
+                    <div
+                      ref={(node) => {
+                        tableScrollRefs.current[series] = node;
+                      }}
+                      onScroll={handleSeriesScroll(series, bookingsInSeries.length, stats.total)}
+                      className="max-h-[30.5rem] overflow-y-auto"
+                    >
                     <table className="w-full text-left border-collapse min-w-[1000px]">
                       <thead>
-                        <tr className="bg-[#C4E8FF]/20">
+                        <tr className="bg-[#C4E8FF] sticky top-0 z-10">
                           <th className="px-6 py-2.5 text-[9px] font-black uppercase tracking-widest text-[#1D3663]/70 border-b border-[#C4E8FF]">
                             Booking Ref / Group
                           </th>
@@ -342,9 +399,15 @@ export function TimelineBookingsTab({
                               <td className="px-6 py-3 text-right align-top">
                                 <button
                                   onClick={() => onManageBooking(booking)}
-                                  className="bg-[#1D3663] text-white px-6 py-2 rounded-md text-[10px] font-black uppercase tracking-widest hover:brightness-95 transition-all shadow-sm active:scale-95 flex items-center justify-center ml-auto"
+                                  disabled={loadingManageBookingId === booking.id}
+                                  className="bg-[#1D3663] text-white px-6 py-2 rounded-md text-[10px] font-black uppercase tracking-widest hover:brightness-95 transition-all shadow-sm active:scale-95 flex items-center justify-center ml-auto disabled:opacity-70"
                                 >
-                                  Manage
+                                  <span className="inline-flex items-center gap-2">
+                                    {loadingManageBookingId === booking.id && (
+                                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                                    )}
+                                    Manage
+                                  </span>
                                 </button>
                               </td>
                             </tr>
@@ -352,6 +415,18 @@ export function TimelineBookingsTab({
                         })}
                       </tbody>
                     </table>
+                    {loadingSeries.includes(series) && (
+                      <div className="px-6 py-4 text-center text-[10px] font-black uppercase tracking-widest text-[#1D3663]/55 flex items-center justify-center gap-2">
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin text-[#F3796A]" />
+                        Loading more rows...
+                      </div>
+                    )}
+                    {!loadingSeries.includes(series) && hasMoreBookings && (
+                      <div className="px-6 py-4 text-center text-[10px] font-black uppercase tracking-widest text-[#1D3663]/45">
+                        Scroll inside this table to load 10 more rows
+                      </div>
+                    )}
+                    </div>
                   </div>
                 )}
               </div>

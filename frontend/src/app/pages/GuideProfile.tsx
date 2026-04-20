@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router";
 import { Star, Mail, Phone, Calendar, MapPin } from "lucide-react";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
+import { LoadingOverlay } from "../components/ui/LoadingOverlay";
 import { mockApi } from "../mock/api";
 import type { GuideProfileData } from "../mock/types";
 
@@ -10,19 +11,27 @@ export function GuideProfile() {
   const guideId = Number(id);
   const currentYear = new Date().getFullYear();
   const [guideData, setGuideData] = useState<GuideProfileData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
 
     if (Number.isNaN(guideId)) {
       setGuideData(null);
+      setIsLoading(false);
       return;
     }
 
     void (async () => {
-      const result = await mockApi.getGuideProfile(guideId);
-      if (active) {
-        setGuideData(result);
+      try {
+        const result = await mockApi.getGuideProfile(guideId);
+        if (active) {
+          setGuideData(result);
+        }
+      } finally {
+        if (active) {
+          setIsLoading(false);
+        }
       }
     })();
 
@@ -70,7 +79,8 @@ export function GuideProfile() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full relative">
+        {isLoading && <LoadingOverlay label="Loading guide profile..." />}
         {!guideData ? (
           <section className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] p-10 text-center">
             <h2 className="text-2xl font-black text-[#1D3663]">Guide not found</h2>

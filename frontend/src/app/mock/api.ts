@@ -1,10 +1,12 @@
 import type {
   CityOption,
+  CountryOption,
   GuideDirectoryItem,
   GuideEmailRecord,
   GuideFormData,
   GuideProfileData,
   ServiceDayPart,
+  TimelineBookingSeries,
   TimelineData,
   WhtType,
 } from "./types";
@@ -65,6 +67,11 @@ type ApiGuideDetail = {
   bio: string[];
 };
 
+type ApiCountryOption = {
+  xid: number;
+  name: string;
+};
+
 type ApiGuideEmailRecord = {
   bookingId: string;
   guideId: number;
@@ -99,6 +106,7 @@ type ApiTimelineGuide = {
 
 type ApiTimelineBooking = {
   id: string;
+  series?: string | null;
   ref: string;
   startDay?: string | null;
   duration: number;
@@ -113,6 +121,15 @@ type ApiTimelineBooking = {
 
 type ApiTimelineData = {
   bookingsData: ApiTimelineBooking[];
+  bookingSeries: Array<{
+    series: string;
+    total: number;
+    assigned: number;
+    notAssigned: number;
+    cancelled: number;
+    onRequest: number;
+    confirmed: number;
+  }>;
   guidesData: ApiTimelineGuide[];
   itemAssignments: Record<string, number>;
   itemTimeSlots: Record<string, string>;
@@ -120,12 +137,133 @@ type ApiTimelineData = {
   guideTimeExceptions: ApiGuideTimeException[];
 };
 
+type ApiBookingsGuideEmailRecord = {
+  bookingId: string;
+  guideId: number;
+  status: "draft" | "sent";
+  date?: string | null;
+  subject: string;
+  body: string;
+};
+
+type ApiBookingsGuideTimeException = {
+  id: string;
+  bookingId: string;
+  guideId: number;
+  date?: string | null;
+  startHour: number;
+  endHour: number;
+};
+
+type ApiBookingsBusyDate = {
+  id: string;
+  from?: string | null;
+  to?: string | null;
+};
+
+type ApiBookingsGuide = {
+  id: number;
+  name: string;
+  tags: string[];
+  busyDates: ApiBookingsBusyDate[];
+  timeExceptions: ApiBookingsGuideTimeException[];
+};
+
+type ApiBookingsBooking = {
+  id: string;
+  series?: string | null;
+  ref: string;
+  startDay?: string | null;
+  duration: number;
+  client: string;
+  groupName: string;
+  tourName: string;
+  status: string;
+  country?: string | null;
+  assignedGuides: string[];
+  confirmedGuides: string[];
+};
+
+type ApiBookingsData = {
+  bookingsData: ApiBookingsBooking[];
+  bookingSeries: Array<{
+    series: string;
+    total: number;
+    assigned: number;
+    notAssigned: number;
+    cancelled: number;
+    onRequest: number;
+    confirmed: number;
+  }>;
+  guidesData: ApiBookingsGuide[];
+  itemAssignments: Record<string, number>;
+  itemTimeSlots: Record<string, string>;
+  emailRecords: Record<string, ApiBookingsGuideEmailRecord>;
+  guideTimeExceptions: ApiBookingsGuideTimeException[];
+};
+
 type TimelineQuery = {
   from?: string;
   to?: string;
+  countryXid?: number;
+  search?: string;
+  client?: string;
+  country?: string;
+  guide?: string;
+  series?: "all" | "series" | "noseries";
+  loadSeries?: string;
+  seriesSkip?: number;
+  seriesTake?: number;
 };
 
+type BookingsQuery = Omit<TimelineQuery, "countryXid">;
+
 const normalizeTag = (value: string) => value.trim().toUpperCase();
+const normalizeSeriesName = (value?: string | null) => {
+  const normalized = value?.trim();
+  return normalized ? normalized : "NO SERIES";
+};
+
+const mergeBookingSeries = (
+  items: Array<{
+    series: string;
+    total: number;
+    assigned: number;
+    notAssigned: number;
+    cancelled: number;
+    onRequest: number;
+    confirmed: number;
+  }>,
+): TimelineBookingSeries[] => {
+  const merged = new Map<string, TimelineBookingSeries>();
+
+  items.forEach((item) => {
+    const series = normalizeSeriesName(item.series);
+    const current = merged.get(series);
+    if (current) {
+      current.total += item.total;
+      current.assigned += item.assigned;
+      current.notAssigned += item.notAssigned;
+      current.cancelled += item.cancelled;
+      current.onRequest += item.onRequest;
+      current.confirmed += item.confirmed;
+      return;
+    }
+
+    merged.set(series, {
+      series,
+      total: item.total,
+      assigned: item.assigned,
+      notAssigned: item.notAssigned,
+      cancelled: item.cancelled,
+      onRequest: item.onRequest,
+      confirmed: item.confirmed,
+    });
+  });
+
+  return Array.from(merged.values());
+};
+
 const formatLongDate = (value: string) =>
   new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric", year: "numeric" }).format(
     new Date(`${value}T00:00:00`),
@@ -245,6 +383,7 @@ const mapGuideFormData = (guide?: ApiGuideDetail | null): GuideFormData => ({
 const mapTimelineData = (data: ApiTimelineData): TimelineData => ({
   bookingsData: (data.bookingsData ?? []).map((booking) => ({
     id: booking.id,
+    series: normalizeSeriesName(booking.series),
     ref: booking.ref,
     startDay: booking.startDay ?? "",
     duration: booking.duration,
@@ -256,6 +395,66 @@ const mapTimelineData = (data: ApiTimelineData): TimelineData => ({
     assignedGuides: booking.assignedGuides ?? [],
     confirmedGuides: booking.confirmedGuides ?? [],
   })),
+  bookingSeries: mergeBookingSeries(data.bookingSeries ?? []),
+  guidesData: (data.guidesData ?? []).map((guide) => ({
+    id: guide.id,
+    name: guide.name,
+    tags: guide.tags ?? [],
+    busyDates: (guide.busyDates ?? []).map((busyDate) => ({
+      id: busyDate.id,
+      from: busyDate.from ?? "",
+      to: busyDate.to ?? "",
+    })),
+    timeExceptions: (guide.timeExceptions ?? []).map((exception) => ({
+      id: exception.id,
+      bookingId: exception.bookingId,
+      guideId: exception.guideId,
+      date: exception.date ?? "",
+      startHour: exception.startHour,
+      endHour: exception.endHour,
+    })),
+  })),
+  itemAssignments: data.itemAssignments ?? {},
+  itemTimeSlots: Object.fromEntries(
+    Object.entries(data.itemTimeSlots ?? {}).map(([itemId, slot]) => [itemId, ensureServiceDayPart(slot)]),
+  ),
+  emailRecords: Object.fromEntries(
+    Object.entries(data.emailRecords ?? {}).map(([key, record]) => [
+      key,
+      {
+        status: record.status === "sent" ? "sent" : "draft",
+        date: record.date ?? "",
+        subject: record.subject ?? "",
+        body: record.body ?? "",
+      },
+    ]),
+  ),
+  guideTimeExceptions: (data.guideTimeExceptions ?? []).map((exception) => ({
+    id: exception.id,
+    bookingId: exception.bookingId,
+    guideId: exception.guideId,
+    date: exception.date ?? "",
+    startHour: exception.startHour,
+    endHour: exception.endHour,
+  })),
+});
+
+const mapBookingsData = (data: ApiBookingsData): TimelineData => ({
+  bookingsData: (data.bookingsData ?? []).map((booking) => ({
+    id: booking.id,
+    series: normalizeSeriesName(booking.series),
+    ref: booking.ref,
+    startDay: booking.startDay ?? "",
+    duration: booking.duration,
+    client: booking.client,
+    groupName: booking.groupName,
+    tourName: booking.tourName,
+    status: booking.status,
+    country: booking.country ?? undefined,
+    assignedGuides: booking.assignedGuides ?? [],
+    confirmedGuides: booking.confirmedGuides ?? [],
+  })),
+  bookingSeries: mergeBookingSeries(data.bookingSeries ?? []),
   guidesData: (data.guidesData ?? []).map((guide) => ({
     id: guide.id,
     name: guide.name,
@@ -353,6 +552,10 @@ export const mockApi = {
     return request<CityOption[]>("/api/guides/meta/cities");
   },
 
+  async getCountryOptions(): Promise<CountryOption[]> {
+    return request<ApiCountryOption[]>("/api/guides/meta/countries");
+  },
+
   async saveGuide(formData: GuideFormData): Promise<number> {
     const payload = {
       name: formData.name.trim(),
@@ -403,9 +606,35 @@ export const mockApi = {
     const searchParams = new URLSearchParams();
     if (query?.from) searchParams.set("from", query.from);
     if (query?.to) searchParams.set("to", query.to);
+    if (typeof query?.countryXid === "number") searchParams.set("countryXid", String(query.countryXid));
+    if (query?.search) searchParams.set("search", query.search);
+    if (query?.client) searchParams.set("client", query.client);
+    if (query?.country) searchParams.set("country", query.country);
+    if (query?.guide) searchParams.set("guide", query.guide);
+    if (query?.series && query.series !== "all") searchParams.set("series", query.series);
+    if (query?.loadSeries) searchParams.set("loadSeries", query.loadSeries);
+    if (typeof query?.seriesSkip === "number") searchParams.set("seriesSkip", String(query.seriesSkip));
+    if (typeof query?.seriesTake === "number") searchParams.set("seriesTake", String(query.seriesTake));
     const suffix = searchParams.size > 0 ? `?${searchParams.toString()}` : "";
     const timeline = await request<ApiTimelineData>(`/api/timeline${suffix}`);
     return mapTimelineData(timeline);
+  },
+
+  async getBookingsData(query?: BookingsQuery): Promise<TimelineData> {
+    const searchParams = new URLSearchParams();
+    if (query?.from) searchParams.set("from", query.from);
+    if (query?.to) searchParams.set("to", query.to);
+    if (query?.search) searchParams.set("search", query.search);
+    if (query?.client) searchParams.set("client", query.client);
+    if (query?.country) searchParams.set("country", query.country);
+    if (query?.guide) searchParams.set("guide", query.guide);
+    if (query?.series && query.series !== "all") searchParams.set("series", query.series);
+    if (query?.loadSeries) searchParams.set("loadSeries", query.loadSeries);
+    if (typeof query?.seriesSkip === "number") searchParams.set("seriesSkip", String(query.seriesSkip));
+    if (typeof query?.seriesTake === "number") searchParams.set("seriesTake", String(query.seriesTake));
+    const suffix = searchParams.size > 0 ? `?${searchParams.toString()}` : "";
+    const bookings = await request<ApiBookingsData>(`/api/bookings${suffix}`);
+    return mapBookingsData(bookings);
   },
 
   async setBookingGuideConfirmation(bookingId: string, guideName: string, confirmed: boolean): Promise<TimelineData> {

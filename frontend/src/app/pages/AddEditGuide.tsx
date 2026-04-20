@@ -10,6 +10,7 @@ import {
   FileText,
   X,
   Plus,
+  LoaderCircle,
 } from "lucide-react";
 import {
   LANGUAGE_OPTIONS,
@@ -17,6 +18,7 @@ import {
   getWhtTaxByType,
   mockApi,
 } from "../mock/api";
+import { LoadingOverlay } from "../components/ui/LoadingOverlay";
 import type { GuideFormData, WhtType } from "../mock/types";
 
 export function AddEditGuide() {
@@ -44,21 +46,30 @@ export function AddEditGuide() {
   const [tagOptions, setTagOptions] = useState<string[]>([]);
   const [newTagValue, setNewTagValue] = useState("");
   const [cityOptions, setCityOptions] = useState<{ city: string; country: string }[]>([]);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isTagLoading, setIsTagLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     let active = true;
 
     void (async () => {
-      const [guideFormData, nextTagOptions, nextCityOptions] = await Promise.all([
-        mockApi.getGuideFormData(guideId),
-        mockApi.getGuideClientTags(),
-        mockApi.getCityOptions(),
-      ]);
+      try {
+        const [guideFormData, nextTagOptions, nextCityOptions] = await Promise.all([
+          mockApi.getGuideFormData(guideId),
+          mockApi.getGuideClientTags(),
+          mockApi.getCityOptions(),
+        ]);
 
-      if (!active) return;
-      setFormData(guideFormData);
-      setTagOptions(nextTagOptions);
-      setCityOptions(nextCityOptions);
+        if (!active) return;
+        setFormData(guideFormData);
+        setTagOptions(nextTagOptions);
+        setCityOptions(nextCityOptions);
+      } finally {
+        if (active) {
+          setIsInitialLoading(false);
+        }
+      }
     })();
 
     return () => {
@@ -122,21 +133,31 @@ export function AddEditGuide() {
       return;
     }
 
-    const nextOptions = await mockApi.createGuideClientTag(normalizedTag);
-    setTagOptions(nextOptions);
-    setFormData((prev) => ({
-      ...prev,
-      tags: prev.tags.includes(normalizedTag) ? prev.tags : [...prev.tags, normalizedTag],
-    }));
-    setNewTagValue("");
+    setIsTagLoading(true);
+    try {
+      const nextOptions = await mockApi.createGuideClientTag(normalizedTag);
+      setTagOptions(nextOptions);
+      setFormData((prev) => ({
+        ...prev,
+        tags: prev.tags.includes(normalizedTag) ? prev.tags : [...prev.tags, normalizedTag],
+      }));
+      setNewTagValue("");
+    } finally {
+      setIsTagLoading(false);
+    }
   };
 
   const handleSubmit = async () => {
-    await mockApi.saveGuide({
-      ...formData,
-      id: guideId ?? formData.id,
-    });
-    navigate("/guides");
+    setIsSaving(true);
+    try {
+      await mockApi.saveGuide({
+        ...formData,
+        id: guideId ?? formData.id,
+      });
+      navigate("/guides");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -174,9 +195,13 @@ export function AddEditGuide() {
           </Link>
           <button
             onClick={handleSubmit}
+            disabled={isSaving}
             className="px-4 py-1.5 bg-[#F3796A] text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:brightness-95 transition-all shadow-sm active:scale-95"
           >
-            Save Guide
+            <span className="inline-flex items-center gap-2">
+              {isSaving && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+              Save Guide
+            </span>
           </button>
           <div className="w-8 h-8 rounded-full bg-[#1D3663] flex items-center justify-center text-white font-bold text-xs">
             U
@@ -185,6 +210,9 @@ export function AddEditGuide() {
       </header>
 
       <main className="flex-1 flex flex-col h-full relative overflow-y-auto p-6 md:p-8">
+        {(isInitialLoading || isSaving) && (
+          <LoadingOverlay label={isSaving ? "Saving guide..." : "Loading guide form..."} />
+        )}
         <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 xl:grid-cols-12 gap-6 pb-20">
           <div className="xl:col-span-7 space-y-6">
             <section className="bg-white rounded-2xl p-6 shadow-sm border border-[#C4E8FF]">
@@ -428,9 +456,13 @@ export function AddEditGuide() {
                   <button
                     type="button"
                     onClick={handleCreateTag}
+                    disabled={isTagLoading}
                     className="px-4 py-2.5 bg-[#1D3663] text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:brightness-95 transition-all"
                   >
-                    Add Tag
+                    <span className="inline-flex items-center gap-2">
+                      {isTagLoading && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+                      Add Tag
+                    </span>
                   </button>
                 </div>
 

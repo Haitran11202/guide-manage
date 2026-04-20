@@ -58,4 +58,11 @@ public sealed class GuidesController(IGuideRepository guideRepository) : Control
         var cities = await guideRepository.GetCityOptionsAsync(cancellationToken);
         return Ok(cities);
     }
+
+    [HttpGet("meta/countries")]
+    public async Task<ActionResult<IReadOnlyList<CountryOptionDto>>> GetCountryOptions(CancellationToken cancellationToken)
+    {
+        var countries = await guideRepository.GetCountryOptionsAsync(cancellationToken);
+        return Ok(countries);
+    }
 }

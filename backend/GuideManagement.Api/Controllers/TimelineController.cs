@@ -12,9 +12,30 @@ public sealed class TimelineController(ITimelineRepository timelineRepository) :
     public async Task<ActionResult<TimelineDataDto>> GetTimeline(
         [FromQuery] DateOnly? from,
         [FromQuery] DateOnly? to,
+        [FromQuery] int? countryXid,
+        [FromQuery] string? search,
+        [FromQuery] string? client,
+        [FromQuery] string? country,
+        [FromQuery] string? guide,
+        [FromQuery] string? series,
+        [FromQuery] string? loadSeries,
+        [FromQuery] int? seriesSkip,
+        [FromQuery] int? seriesTake,
         CancellationToken cancellationToken)
     {
-        var timeline = await timelineRepository.GetTimelineAsync(from, to, cancellationToken);
+        var timeline = await timelineRepository.GetTimelineAsync(
+            from,
+            to,
+            countryXid,
+            search,
+            client,
+            country,
+            guide,
+            series,
+            loadSeries,
+            seriesSkip,
+            seriesTake,
+            cancellationToken);
         return Ok(timeline);
     }
 

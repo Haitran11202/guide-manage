@@ -11,4 +11,5 @@ public interface IGuideRepository
     Task<IReadOnlyList<string>> GetGuideClientTagsAsync(CancellationToken cancellationToken);
     Task<IReadOnlyList<string>> CreateGuideClientTagAsync(string tag, CancellationToken cancellationToken);
     Task<IReadOnlyList<CityOptionDto>> GetCityOptionsAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyList<CountryOptionDto>> GetCountryOptionsAsync(CancellationToken cancellationToken);
 }

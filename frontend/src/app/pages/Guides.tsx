@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { Search, UserPlus, X, Calendar } from "lucide-react";
 import { mockApi } from "../mock/api";
+import { LoadingOverlay } from "../components/ui/LoadingOverlay";
 import type { GuideDirectoryItem } from "../mock/types";
 
 export function Guides() {
@@ -10,19 +11,26 @@ export function Guides() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<string>("All");
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
 
     void (async () => {
-      const [guideResults, tagResults] = await Promise.all([
-        mockApi.getGuides(),
-        mockApi.getGuideClientTags(),
-      ]);
+      try {
+        const [guideResults, tagResults] = await Promise.all([
+          mockApi.getGuides(),
+          mockApi.getGuideClientTags(),
+        ]);
 
-      if (!active) return;
-      setGuides(guideResults);
-      setGuideTagOptions(tagResults);
+        if (!active) return;
+        setGuides(guideResults);
+        setGuideTagOptions(tagResults);
+      } finally {
+        if (active) {
+          setIsLoading(false);
+        }
+      }
     })();
 
     return () => {
@@ -70,6 +78,7 @@ export function Guides() {
       </header>
 
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden bg-[#C4E8FF]/10 relative z-0">
+        {isLoading && <LoadingOverlay label="Loading guide directory..." />}
         <div className="flex-1 p-6 md:p-8 flex flex-col gap-6 overflow-hidden max-w-[1400px] mx-auto w-full">
           
           {/* Title Section merged with Search & Add actions */}

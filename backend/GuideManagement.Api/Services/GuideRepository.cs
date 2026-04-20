@@ -312,6 +312,38 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
         return result;
     }
 
+    public async Task<IReadOnlyList<CountryOptionDto>> GetCountryOptionsAsync(CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                c.Pid,
+                LTRIM(RTRIM(c.Country)) AS CountryName
+            FROM dbo.M_Country c
+            WHERE c.Pid IS NOT NULL
+              AND c.Country IS NOT NULL
+              AND LTRIM(RTRIM(c.Country)) <> ''
+            ORDER BY CountryName;
+            """;
+
+        var result = new List<CountryOptionDto>();
+
+        await using var connection = connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new CountryOptionDto
+            {
+                Xid = reader.GetInt32(0),
+                Name = reader.IsDBNull(1) ? string.Empty : reader.GetString(1)
+            });
+        }
+
+        return result;
+    }
+
     private static void BindGuideUpsertParameters(SqlCommand command, GuideUpsertRequest request)
     {
         command.Parameters.AddWithValue("@SupplierXid", 0);

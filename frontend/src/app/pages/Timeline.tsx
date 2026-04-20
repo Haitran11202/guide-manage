@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, type KeyboardEvent } from "react";
 import { Link, useLocation } from "react-router";
 import {
   ChevronLeft,
@@ -19,14 +19,17 @@ import {
   PlaneLanding,
   Pencil,
   Clock3,
+  LoaderCircle,
 } from "lucide-react";
 import { buildGuideEmailKey, mockApi } from "../mock/api";
 import { TimelineBookingAssignmentModal } from "../components/timeline/TimelineBookingAssignmentModal";
 import { TimelineBookingsTab } from "../components/timeline/TimelineBookingsTab";
-import type { GuideEmailRecord, GuideTimeException, ServiceDayPart } from "../mock/types";
+import { LoadingOverlay } from "../components/ui/LoadingOverlay";
+import type { CountryOption, GuideEmailRecord, GuideTimeException, ServiceDayPart, TimelineBookingSeries } from "../mock/types";
 
 type Booking = {
   id: string;
+  series: string;
   ref: string;
   startDay: string;
   duration: number;
@@ -94,21 +97,15 @@ const checkOverlap = (start1: number, end1: number, start2: number, end2: number
   return start1 <= end2 && end1 >= start2;
 };
 
+const BOOKING_SERIES_PAGE_SIZE = 10;
+
 const formatHour = (value: number) => `${value.toString().padStart(2, "0")}:00`;
 
 const formatHourRange = (startHour: number, endHour: number) => `${formatHour(startHour)} - ${formatHour(endHour)}`;
 
 const toDateKey = (value: Date) => value.toISOString().split("T")[0];
 
-const getSeriesName = (groupName: string) => {
-  if (!groupName) return "NO SERIES";
-  if (groupName.includes("AJJR")) return "AJJR";
-  if (groupName.includes("LEUJ")) return "LEUJ";
-  if (groupName.includes("HM")) return "HM";
-  if (groupName.includes("LEJH")) return "LEJH";
-  if (groupName.includes("AJBR")) return "AJBR";
-  return "NO SERIES";
-};
+const getBookingSeriesName = (booking: { series?: string | null }) => booking.series?.trim() || "NO SERIES";
 
 const getDynamicallyCalculatedStatus = (guide: any, targetIntervals: { start: number, end: number }[], itemAssignments: Record<string, number>) => {
   for (const b of guide.busyDates) {
@@ -161,8 +158,42 @@ const getDynamicallyCalculatedStatus = (guide: any, targetIntervals: { start: nu
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const GUIDES_PER_PAGE = 20;
+const DEFAULT_COUNTRY_NAME = "Japan";
+
+const formatDateInputValue = (value: Date) => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const getCurrentMonthRange = () => {
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), 1);
+  const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+
+  return {
+    from: formatDateInputValue(start),
+    to: formatDateInputValue(end),
+  };
+};
+
+const useDebouncedValue = <T,>(value: T, delayMs: number) => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedValue(value);
+    }, delayMs);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [value, delayMs]);
+
+  return debouncedValue;
+};
 
 export function Timeline() {
+  const defaultMonthRange = getCurrentMonthRange();
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
   const queryTab = searchParams.get("tab");
@@ -196,31 +227,78 @@ export function Timeline() {
   const [filterGuide, setFilterGuide] = useState("");
   const [filterSearch, setFilterSearch] = useState("");
   const [filterClient, setFilterClient] = useState("");
-  const [filterCountry, setFilterCountry] = useState("");
-  const [filterDateFrom, setFilterDateFrom] = useState("");
-  const [filterDateTo, setFilterDateTo] = useState("");
+  const [selectedCountryXid, setSelectedCountryXid] = useState("");
+  const [filterDateFrom, setFilterDateFrom] = useState(defaultMonthRange.from);
+  const [filterDateTo, setFilterDateTo] = useState(defaultMonthRange.to);
+  const [draftFilterDateFrom, setDraftFilterDateFrom] = useState(defaultMonthRange.from);
+  const [draftFilterDateTo, setDraftFilterDateTo] = useState(defaultMonthRange.to);
   const [filterSeries, setFilterSeries] = useState<"all" | "series" | "noseries">("all");
+  const [countryOptions, setCountryOptions] = useState<CountryOption[]>([]);
 
   const [modalSearchTerm, setModalSearchTerm] = useState("");
-  const [modalFilterCountry, setModalFilterCountry] = useState("");
+  const [modalFilterCountry, setModalFilterCountry] = useState(DEFAULT_COUNTRY_NAME);
   const [modalFilterClient, setModalFilterClient] = useState("");
   const [modalFilterGuide, setModalFilterGuide] = useState("");
-  const [modalFilterDateFrom, setModalFilterDateFrom] = useState("");
-  const [modalFilterDateTo, setModalFilterDateTo] = useState("");
+  const [modalFilterDateFrom, setModalFilterDateFrom] = useState(defaultMonthRange.from);
+  const [modalFilterDateTo, setModalFilterDateTo] = useState(defaultMonthRange.to);
   const [modalFilterSeries, setModalFilterSeries] = useState<"all" | "series" | "noseries">("all");
+
+  const debouncedModalSearchTerm = useDebouncedValue(modalSearchTerm, 300);
+  const debouncedModalFilterClient = useDebouncedValue(modalFilterClient, 300);
+  const debouncedModalFilterCountry = useDebouncedValue(modalFilterCountry, 300);
+  const debouncedModalFilterGuide = useDebouncedValue(modalFilterGuide, 300);
 
   const [hoveredSeries, setHoveredSeries] = useState<string | null>(null);
 
   const [bookingsData, setBookingsData] = useState<Booking[]>([]);
+  const [bookingSeries, setBookingSeries] = useState<TimelineBookingSeries[]>([]);
   const [guidesData, setGuidesData] = useState<Guide[]>([]);
   const [itemAssignments, setItemAssignments] = useState<Record<string, number>>({});
   const [itemTimeSlots, setItemTimeSlots] = useState<Record<string, ServiceDayPart>>({});
   const [emailRecords, setEmailRecords] = useState<Record<string, GuideEmailRecord>>({});
   const [guideTimingModalState, setGuideTimingModalState] = useState<GuideTimingModalState>(null);
   const timelineRequestRef = useRef(0);
+  const bookingManagerRequestRef = useRef(0);
+  const pendingSeriesLoadRef = useRef(new Set<string>());
+  const [isBookingsTableLoading, setIsBookingsTableLoading] = useState(false);
+  const [loadingBookingSeries, setLoadingBookingSeries] = useState<string[]>([]);
+  const [loadingManageBookingId, setLoadingManageBookingId] = useState<string | null>(null);
+  const [timelineLoadingCount, setTimelineLoadingCount] = useState(0);
+  const [timelineLoadingLabel, setTimelineLoadingLabel] = useState("Loading...");
+
+  const runTimelineApi = async <T,>(label: string, action: () => Promise<T>, showOverlay = true) => {
+    if (showOverlay) {
+      setTimelineLoadingLabel(label);
+      setTimelineLoadingCount((current) => current + 1);
+    }
+    try {
+      return await action();
+    } finally {
+      if (showOverlay) {
+        setTimelineLoadingCount((current) => Math.max(0, current - 1));
+      }
+    }
+  };
+
+  const applyTimelineSupportData = (data: {
+    bookingsData: Booking[];
+    bookingSeries: TimelineBookingSeries[];
+    guidesData: Guide[];
+    itemAssignments: Record<string, number>;
+    itemTimeSlots: Record<string, ServiceDayPart>;
+    emailRecords: Record<string, GuideEmailRecord>;
+    guideTimeExceptions: GuideTimeException[];
+  }) => {
+    setBookingSeries(data.bookingSeries);
+    setGuidesData(data.guidesData);
+    setItemAssignments(data.itemAssignments);
+    setItemTimeSlots(data.itemTimeSlots);
+    setEmailRecords(data.emailRecords);
+  };
 
   const applyTimelineData = (data: {
     bookingsData: Booking[];
+    bookingSeries: TimelineBookingSeries[];
     guidesData: Guide[];
     itemAssignments: Record<string, number>;
     itemTimeSlots: Record<string, ServiceDayPart>;
@@ -228,26 +306,113 @@ export function Timeline() {
     guideTimeExceptions: GuideTimeException[];
   }) => {
     setBookingsData(data.bookingsData);
-    setGuidesData(data.guidesData);
-    setItemAssignments(data.itemAssignments);
-    setItemTimeSlots(data.itemTimeSlots);
-    setEmailRecords(data.emailRecords);
+    applyTimelineSupportData(data);
   };
 
   const [pendingGuideStatusChange, setPendingGuideStatusChange] = useState<PendingGuideStatusChange>(null);
   const [emailComposerState, setEmailComposerState] = useState<EmailComposerState>(null);
 
+  const clearTimelineData = () => {
+    applyTimelineData({
+      bookingsData: [],
+      bookingSeries: [],
+      guidesData: [],
+      itemAssignments: {},
+      itemTimeSlots: {},
+      emailRecords: {},
+      guideTimeExceptions: [],
+    });
+  };
+
+  const resolveActiveAssignmentBooking = (
+    data: {
+      bookingsData: Booking[];
+      guidesData: Guide[];
+      itemAssignments: Record<string, number>;
+    },
+    currentBooking: Booking | null,
+  ) => {
+    if (!currentBooking) {
+      return null;
+    }
+
+    const updatedBooking = data.bookingsData.find((booking) => booking.id === currentBooking.id);
+    if (updatedBooking) {
+      if (activeTab === "bookings") {
+        return {
+          ...updatedBooking,
+          series: currentBooking.series,
+          ref: currentBooking.ref,
+          client: currentBooking.client,
+          groupName: currentBooking.groupName,
+          country: currentBooking.country,
+        };
+      }
+      return updatedBooking;
+    }
+
+    const guideNameById = new Map(data.guidesData.map((guide) => [guide.id, guide.name]));
+    const assignedGuides = Array.from(
+      new Set(
+        Object.entries(data.itemAssignments)
+          .filter(([itemId, guideId]) => itemId.startsWith(`${currentBooking.id}-`) && guideId > 0)
+          .map(([, guideId]) => guideNameById.get(guideId))
+          .filter((guideName): guideName is string => Boolean(guideName)),
+      ),
+    ).sort((left, right) => left.localeCompare(right));
+
+    return {
+      ...currentBooking,
+      assignedGuides,
+      confirmedGuides: (currentBooking.confirmedGuides ?? []).filter((guideName) => assignedGuides.includes(guideName)),
+    };
+  };
+
+  const selectedCountryXidNumber = selectedCountryXid ? Number(selectedCountryXid) : null;
+
   const fetchTimelineData = async (range?: { from?: string; to?: string }) => {
+    const query =
+      activeTab === "calendar"
+        ? selectedCountryXidNumber
+          ? { ...range, countryXid: selectedCountryXidNumber }
+          : range
+        : {
+            ...range,
+            search: debouncedModalSearchTerm || undefined,
+            client: debouncedModalFilterClient || undefined,
+            country: debouncedModalFilterCountry || undefined,
+            guide: debouncedModalFilterGuide || undefined,
+            series: modalFilterSeries,
+            seriesTake: BOOKING_SERIES_PAGE_SIZE,
+          };
     const requestId = timelineRequestRef.current + 1;
     timelineRequestRef.current = requestId;
-    const data = await mockApi.getTimelineData(range);
-    if (timelineRequestRef.current === requestId) {
-      applyTimelineData(data);
+    const isBookingsRequest = activeTab === "bookings";
+    if (isBookingsRequest) {
+      setIsBookingsTableLoading(true);
     }
-    return data;
+    try {
+      const data = await runTimelineApi(
+        "Loading timeline data...",
+        () => (isBookingsRequest ? mockApi.getBookingsData(query) : mockApi.getTimelineData(query)),
+        !isBookingsRequest,
+      );
+      if (timelineRequestRef.current === requestId) {
+        applyTimelineData(data);
+      }
+      return data;
+    } finally {
+      if (isBookingsRequest && timelineRequestRef.current === requestId) {
+        setIsBookingsTableLoading(false);
+      }
+    }
   };
 
   const allCountries = useMemo(() => {
+    if (countryOptions.length > 0) {
+      return countryOptions.map((country) => country.name).sort((left, right) => left.localeCompare(right));
+    }
+
     const countries = new Set<string>();
     bookingsData.forEach((b) => {
       if (b.country) {
@@ -273,6 +438,28 @@ export function Timeline() {
   }, [guidesData, bookingsData]);
 
   useEffect(() => {
+    let active = true;
+
+    void (async () => {
+      const countries = await runTimelineApi("Loading countries...", () => mockApi.getCountryOptions());
+      if (!active) return;
+      setCountryOptions(countries);
+      if (!selectedCountryXid) {
+        const defaultCountry = countries.find(
+          (country) => country.name.trim().toLowerCase() === DEFAULT_COUNTRY_NAME.toLowerCase(),
+        );
+        if (defaultCountry) {
+          setSelectedCountryXid(String(defaultCountry.xid));
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (Number.isNaN(queryGuideId) || queryGuideId <= 0) {
       if (queryTab === "calendar") {
         setFilterGuide("");
@@ -288,16 +475,59 @@ export function Timeline() {
     }
   }, [guidesData, queryGuideId, queryTab]);
 
+  useEffect(() => {
+    if (activeTab !== "calendar") {
+      return;
+    }
+
+    const preferredDate = filterDateFrom || filterDateTo;
+    if (!preferredDate) {
+      return;
+    }
+
+    const nextYear = Number(preferredDate.slice(0, 4));
+    if (!Number.isNaN(nextYear) && nextYear > 0 && nextYear !== currentYear) {
+      setCurrentYear(nextYear);
+    }
+  }, [activeTab, currentYear, filterDateFrom, filterDateTo]);
+
+  useEffect(() => {
+    setDraftFilterDateFrom(filterDateFrom);
+  }, [filterDateFrom]);
+
+  useEffect(() => {
+    setDraftFilterDateTo(filterDateTo);
+  }, [filterDateTo]);
+
+  const commitCalendarDateFrom = () => {
+    if (draftFilterDateFrom !== filterDateFrom) {
+      setFilterDateFrom(draftFilterDateFrom);
+      setGuidePage(1);
+    }
+  };
+
+  const commitCalendarDateTo = () => {
+    if (draftFilterDateTo !== filterDateTo) {
+      setFilterDateTo(draftFilterDateTo);
+      setGuidePage(1);
+    }
+  };
+
+  const handleCalendarDateKeyDown = (event: KeyboardEvent<HTMLInputElement>, commit: () => void) => {
+    if (event.key === "Enter") {
+      commit();
+    }
+  };
+
   const filteredGuidesList = useMemo(() => {
     return guidesWithTours.filter((g) => {
       if (filterGuide && !g.name.toLowerCase().includes(filterGuide.toLowerCase())) return false;
-      if (filterSearch || filterClient || filterCountry || filterDateFrom || filterDateTo || filterSeries !== "all") {
+      if (filterSearch || filterClient || filterDateFrom || filterDateTo || filterSeries !== "all") {
         const hasMatchingTour = g.tours.some((t: any) => {
           const matchSearch = filterSearch ? (t.ref.toLowerCase().includes(filterSearch.toLowerCase()) || t.groupName.toLowerCase().includes(filterSearch.toLowerCase())) : true;
           const matchClient = filterClient ? t.client.toLowerCase().includes(filterClient.toLowerCase()) : true;
-          const matchCountry = filterCountry ? t.country?.toLowerCase().includes(filterCountry.toLowerCase()) : true;
 
-          const sName = getSeriesName(t.groupName);
+          const sName = getBookingSeriesName(t);
           const isSeriesTour = sName !== "NO SERIES";
           const matchSeries = filterSeries === "series" ? isSeriesTour : filterSeries === "noseries" ? !isSeriesTour : true;
 
@@ -315,19 +545,20 @@ export function Timeline() {
               matchDate = tStart <= new Date(`${filterDateTo}T00:00:00`).getTime();
             }
           }
-          return matchSearch && matchClient && matchCountry && matchDate && matchSeries;
+          return matchSearch && matchClient && matchDate && matchSeries;
         });
         if (!hasMatchingTour) return false;
       }
       return true;
     });
-  }, [guidesWithTours, filterGuide, filterSearch, filterClient, filterCountry, filterDateFrom, filterDateTo, filterSeries]);
+  }, [guidesWithTours, filterGuide, filterSearch, filterClient, filterDateFrom, filterDateTo, filterSeries]);
 
   const paginatedGuides = useMemo(() => filteredGuidesList.slice((guidePage - 1) * GUIDES_PER_PAGE, guidePage * GUIDES_PER_PAGE), [filteredGuidesList, guidePage]);
   const totalGuidePages = Math.max(1, Math.ceil(filteredGuidesList.length / GUIDES_PER_PAGE));
 
   const [expandedSeries, setExpandedSeries] = useState<Set<string>>(new Set());
   const [activeAssignmentBooking, setActiveAssignmentBooking] = useState<any | null>(null);
+  const [bookingManagerDirty, setBookingManagerDirty] = useState(false);
 
   const [guideDetailsModalId, setGuideDetailsModalId] = useState<number | null>(null);
   const [detailsModalYear, setDetailsModalYear] = useState(new Date().getFullYear());
@@ -435,26 +666,50 @@ export function Timeline() {
   }, [zoomLevel, currentYear, allDaysInYear, currentCellWidth, isDaily]);
 
   useEffect(() => {
-    if (isDaily) {
+    if (activeTab !== "calendar") {
       return;
     }
 
-    const from = `${currentYear}-01-01`;
-    const to = `${currentYear}-12-31`;
-    void fetchTimelineData({ from, to });
-  }, [currentYear, isDaily]);
+    if (!selectedCountryXidNumber) {
+      timelineRequestRef.current += 1;
+      clearTimelineData();
+    }
+  }, [activeTab, selectedCountryXidNumber]);
 
   useEffect(() => {
-    if (!isDaily || !visibleDateStart || !visibleDateEnd) {
+    if (activeTab === "calendar" && !selectedCountryXidNumber) {
       return;
     }
 
-    const timeoutId = window.setTimeout(() => {
-      void fetchTimelineData({ from: visibleDateStart, to: visibleDateEnd });
-    }, 200);
+    if (activeTab === "bookings") {
+      void fetchTimelineData({
+        from: modalFilterDateFrom || `${currentYear}-01-01`,
+        to: modalFilterDateTo || `${currentYear}-12-31`,
+      });
+      return;
+    }
 
-    return () => window.clearTimeout(timeoutId);
-  }, [isDaily, visibleDateStart, visibleDateEnd]);
+    const from = filterDateFrom || `${currentYear}-01-01`;
+    const to = filterDateTo || `${currentYear}-12-31`;
+
+    if (activeTab === "calendar") {
+      void fetchTimelineData({ from, to });
+    }
+  }, [
+    activeTab,
+    currentYear,
+    filterDateFrom,
+    filterDateTo,
+    isDaily,
+    debouncedModalFilterClient,
+    debouncedModalFilterCountry,
+    modalFilterDateFrom,
+    modalFilterDateTo,
+    debouncedModalFilterGuide,
+    modalFilterSeries,
+    debouncedModalSearchTerm,
+    selectedCountryXidNumber,
+  ]);
 
   const getSeriesStats = (bookingsInSeries: Booking[]) => {
     const total = bookingsInSeries.length;
@@ -468,44 +723,156 @@ export function Timeline() {
   };
 
   const groupedBySeries = useMemo(() => {
-    const term = modalSearchTerm.toLowerCase();
-    const filtered = bookingsData.filter((b) => {
-      const matchSearch = term ? (b.ref.toLowerCase().includes(term) || b.groupName.toLowerCase().includes(term)) : true;
-      const matchCountry = modalFilterCountry ? b.country?.toLowerCase().includes(modalFilterCountry.toLowerCase()) : true;
-      const matchClient = modalFilterClient ? b.client?.toLowerCase().includes(modalFilterClient.toLowerCase()) : true;
-      const matchGuide = modalFilterGuide ? b.assignedGuides.some(g => g.toLowerCase().includes(modalFilterGuide.toLowerCase())) : true;
-
-      const sName = getSeriesName(b.groupName);
-      const isSeriesTour = sName !== "NO SERIES";
-      const matchSeries = modalFilterSeries === "series" ? isSeriesTour : modalFilterSeries === "noseries" ? !isSeriesTour : true;
-
-      let matchDate = true;
-      if (modalFilterDateFrom || modalFilterDateTo) {
-        const bStart = new Date(`${b.startDay}T00:00:00`).getTime();
-        const bEnd = bStart + (b.duration - 1) * 86400000;
-        if (modalFilterDateFrom && modalFilterDateTo) {
-          const fStart = new Date(`${modalFilterDateFrom}T00:00:00`).getTime();
-          const fEnd = new Date(`${modalFilterDateTo}T00:00:00`).getTime();
-          matchDate = bStart <= fEnd && bEnd >= fStart;
-        } else if (modalFilterDateFrom) {
-          matchDate = bEnd >= new Date(`${modalFilterDateFrom}T00:00:00`).getTime();
-        } else if (modalFilterDateTo) {
-          matchDate = bStart <= new Date(`${modalFilterDateTo}T00:00:00`).getTime();
-        }
-      }
-
-      return matchSearch && matchCountry && matchClient && matchGuide && matchDate && matchSeries;
-    });
-
     const grouped: Record<string, Booking[]> = {};
-    filtered.forEach((b) => {
-      let series = getSeriesName(b.groupName);
+    bookingSeries.forEach((series) => {
+      grouped[series.series] = [];
+    });
+    bookingsData.forEach((b) => {
+      let series = getBookingSeriesName(b);
       if (!grouped[series]) grouped[series] = [];
       grouped[series].push(b);
     });
     Object.keys(grouped).forEach((s) => grouped[s].sort((a, b) => new Date(a.startDay).getTime() - new Date(b.startDay).getTime()));
     return grouped;
-  }, [bookingsData, modalSearchTerm, modalFilterCountry, modalFilterClient, modalFilterGuide, modalFilterDateFrom, modalFilterDateTo, modalFilterSeries]);
+  }, [bookingSeries, bookingsData]);
+
+  const buildBookingsTimelineQuery = (range?: { from?: string; to?: string }) => ({
+    from: range?.from ?? (modalFilterDateFrom || `${currentYear}-01-01`),
+    to: range?.to ?? (modalFilterDateTo || `${currentYear}-12-31`),
+    search: debouncedModalSearchTerm || undefined,
+    client: debouncedModalFilterClient || undefined,
+    country: debouncedModalFilterCountry || undefined,
+    guide: debouncedModalFilterGuide || undefined,
+    series: modalFilterSeries,
+    seriesTake: BOOKING_SERIES_PAGE_SIZE,
+  });
+
+  const refreshBookingSeriesPage = async (booking: Booking | null) => {
+    if (!booking || activeTab !== "bookings") {
+      return;
+    }
+
+    const series = getBookingSeriesName(booking);
+    const loadedCount = groupedBySeries[series]?.length ?? 0;
+    setLoadingBookingSeries((current) => (current.includes(series) ? current : [...current, series]));
+    try {
+      const nextTimelineData = await runTimelineApi("Refreshing booking data...", () =>
+      mockApi.getBookingsData({
+        ...buildBookingsTimelineQuery(),
+        loadSeries: series,
+        seriesSkip: 0,
+        seriesTake: Math.max(loadedCount, BOOKING_SERIES_PAGE_SIZE),
+      }),
+      false,
+      );
+
+      applyTimelineSupportData(nextTimelineData);
+      setBookingsData((current) => {
+        const preserved = current.filter((item) => getBookingSeriesName(item) !== series);
+        return [...preserved, ...nextTimelineData.bookingsData];
+      });
+    } finally {
+      setLoadingBookingSeries((current) => current.filter((item) => item !== series));
+    }
+  };
+
+  const fetchLatestBookingForManager = async (booking: Booking) => {
+    if (activeTab !== "bookings") {
+      return bookingsData.find((item) => item.id === booking.id) ?? booking;
+    }
+
+    const series = getBookingSeriesName(booking);
+    const loadedCount = groupedBySeries[series]?.length ?? 0;
+    setLoadingManageBookingId(booking.id);
+    try {
+      const nextTimelineData = await runTimelineApi("Loading latest booking details...", () =>
+        mockApi.getBookingsData({
+          ...buildBookingsTimelineQuery(),
+          loadSeries: series,
+          seriesSkip: 0,
+          seriesTake: Math.max(loadedCount, BOOKING_SERIES_PAGE_SIZE),
+        }),
+      false,
+      );
+
+      applyTimelineSupportData(nextTimelineData);
+      setBookingsData((current) => {
+        const preserved = current.filter((item) => getBookingSeriesName(item) !== series);
+        return [...preserved, ...nextTimelineData.bookingsData];
+      });
+
+      return resolveActiveAssignmentBooking(nextTimelineData, booking) ?? booking;
+    } finally {
+      setLoadingManageBookingId((current) => (current === booking.id ? null : current));
+    }
+  };
+
+  const syncBookingManagerMutation = (
+    nextTimelineData: {
+      bookingsData: Booking[];
+      bookingSeries: TimelineBookingSeries[];
+      guidesData: Guide[];
+      itemAssignments: Record<string, number>;
+      itemTimeSlots: Record<string, ServiceDayPart>;
+      emailRecords: Record<string, GuideEmailRecord>;
+      guideTimeExceptions: GuideTimeException[];
+    },
+    currentBooking: Booking | null,
+  ) => {
+    applyTimelineSupportData(nextTimelineData);
+
+    const updatedBooking = resolveActiveAssignmentBooking(nextTimelineData, currentBooking);
+    if (updatedBooking) {
+      setBookingsData((current) =>
+        current.some((item) => item.id === updatedBooking.id)
+          ? current.map((item) => (item.id === updatedBooking.id ? updatedBooking : item))
+          : [...current, updatedBooking],
+      );
+    }
+
+    setBookingManagerDirty(true);
+    return updatedBooking;
+  };
+
+  const handleLoadMoreBookingSeries = async (series: string, loadedCount: number) => {
+    if (activeTab !== "bookings") {
+      return;
+    }
+
+    const requestKey = `${series}:${loadedCount}`;
+    if (pendingSeriesLoadRef.current.has(requestKey)) {
+      return;
+    }
+    pendingSeriesLoadRef.current.add(requestKey);
+    setLoadingBookingSeries((current) => (current.includes(series) ? current : [...current, series]));
+
+    try {
+      const nextTimelineData = await runTimelineApi("Loading more bookings...", () =>
+        mockApi.getBookingsData({
+          ...buildBookingsTimelineQuery(),
+          loadSeries: series,
+          seriesSkip: loadedCount,
+          seriesTake: BOOKING_SERIES_PAGE_SIZE,
+        }),
+      false,
+      );
+
+      setBookingsData((current) => {
+        const existingIds = new Set(current.map((item) => item.id));
+        const merged = [...current];
+        nextTimelineData.bookingsData.forEach((item) => {
+          if (!existingIds.has(item.id)) {
+            merged.push(item);
+            existingIds.add(item.id);
+          }
+        });
+        return merged;
+      });
+    } finally {
+      pendingSeriesLoadRef.current.delete(requestKey);
+      setLoadingBookingSeries((current) => current.filter((item) => item !== series));
+    }
+  };
 
   const toggleSeriesAccordion = (series: string) => {
     setExpandedSeries((prev) => { const next = new Set(prev); if (next.has(series)) next.delete(series); else next.add(series); return next; });
@@ -601,7 +968,9 @@ export function Timeline() {
     }
     if (overlappingTour) { alert(`The guide is already on tour for "${overlappingTour.groupName}" on some of those dates. You cannot add a busy block.`); return; }
 
-    const nextTimelineData = await mockApi.addGuideBusyDate(guideDetailsModalId, newBusyFrom, newBusyTo);
+    const nextTimelineData = await runTimelineApi("Saving busy dates...", () =>
+      mockApi.addGuideBusyDate(guideDetailsModalId, newBusyFrom, newBusyTo),
+    );
     applyTimelineData(nextTimelineData);
     setNewBusyFrom(""); setNewBusyTo("");
   };
@@ -610,9 +979,10 @@ export function Timeline() {
 
   const handleConfirmUnassignGuide = async () => {
     if (!activeAssignmentBooking || !pendingUnassignGuide) return;
-    const nextTimelineData = await mockApi.unassignGuideFromBooking(activeAssignmentBooking.id, pendingUnassignGuide);
-    applyTimelineData(nextTimelineData);
-    const updatedBooking = nextTimelineData.bookingsData.find((booking) => booking.id === activeAssignmentBooking.id) ?? null;
+    const nextTimelineData = await runTimelineApi("Unassigning guide...", () =>
+      mockApi.unassignGuideFromBooking(activeAssignmentBooking.id, pendingUnassignGuide),
+    );
+    const updatedBooking = syncBookingManagerMutation(nextTimelineData, activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
     setPendingUnassignGuide(null); setShowUnassignDialog(false);
   };
@@ -792,17 +1162,23 @@ export function Timeline() {
   };
   const handleClearBookingFilters = () => {
     setModalSearchTerm("");
-    setModalFilterCountry("");
+    setModalFilterCountry(DEFAULT_COUNTRY_NAME);
     setModalFilterClient("");
     setModalFilterGuide("");
-    setModalFilterDateFrom("");
-    setModalFilterDateTo("");
+    setModalFilterDateFrom(defaultMonthRange.from);
+    setModalFilterDateTo(defaultMonthRange.to);
     setModalFilterSeries("all");
   };
 
-  const handleOpenBookingManager = (booking: any) => {
-    const latestBooking = bookingsData.find((item) => item.id === booking.id) ?? booking;
+  const handleOpenBookingManager = async (booking: any) => {
+    const requestId = bookingManagerRequestRef.current + 1;
+    bookingManagerRequestRef.current = requestId;
+    const latestBooking = await fetchLatestBookingForManager(bookingsData.find((item) => item.id === booking.id) ?? booking);
+    if (bookingManagerRequestRef.current !== requestId) {
+      return;
+    }
     setActiveAssignmentBooking(latestBooking);
+    setBookingManagerDirty(false);
     setSelectedItemsToAssign(new Set());
     setShowGuideSelector(false);
     setSelectedGuideId(null);
@@ -810,16 +1186,23 @@ export function Timeline() {
   };
 
   const handleCloseBookingManager = () => {
+    const bookingToRefresh = activeAssignmentBooking;
+    const shouldRefreshSeries = bookingManagerDirty;
     setActiveAssignmentBooking(null);
+    setBookingManagerDirty(false);
     setSelectedItemsToAssign(new Set());
     setShowGuideSelector(false);
     setShowUnassignDialog(false);
     setPendingUnassignGuide(null);
     setEmailComposerState(null);
+    if (shouldRefreshSeries) {
+      void refreshBookingSeriesPage(bookingToRefresh);
+    }
   };
 
   const handleDismissBookingManager = () => {
     setActiveAssignmentBooking(null);
+    setBookingManagerDirty(false);
     setSelectedItemsToAssign(new Set());
     setShowGuideSelector(false);
     setSelectedGuideId(null);
@@ -839,16 +1222,17 @@ export function Timeline() {
 
   const handleConfirmGuideStatusChange = async () => {
     if (!pendingGuideStatusChange) return;
-    const nextTimelineData = await mockApi.setBookingGuideConfirmation(
-      pendingGuideStatusChange.bookingId,
-      pendingGuideStatusChange.guideName,
-      !pendingGuideStatusChange.isConfirmed,
+    const nextTimelineData = await runTimelineApi("Updating guide status...", () =>
+      mockApi.setBookingGuideConfirmation(
+        pendingGuideStatusChange.bookingId,
+        pendingGuideStatusChange.guideName,
+        !pendingGuideStatusChange.isConfirmed,
+      ),
     );
-    applyTimelineData(nextTimelineData);
+    applyTimelineSupportData(nextTimelineData);
 
     if (activeAssignmentBooking?.id === pendingGuideStatusChange.bookingId) {
-      const updatedBooking =
-        nextTimelineData.bookingsData.find((booking) => booking.id === pendingGuideStatusChange.bookingId) ?? null;
+      const updatedBooking = resolveActiveAssignmentBooking(nextTimelineData, activeAssignmentBooking);
       setActiveAssignmentBooking(updatedBooking);
     }
 
@@ -874,17 +1258,18 @@ export function Timeline() {
 
   const handleSaveEmailRecord = async (status: "draft" | "sent") => {
     if (!emailComposerState) return;
-    const nextTimelineData = await mockApi.setGuideEmailRecord(emailComposerState.bookingId, emailComposerState.guideId, {
-      status,
-      date: emailComposerState.date,
-      subject: emailComposerState.subject,
-      body: emailComposerState.body,
-    });
-    applyTimelineData(nextTimelineData);
+    const nextTimelineData = await runTimelineApi("Saving email record...", () =>
+      mockApi.setGuideEmailRecord(emailComposerState.bookingId, emailComposerState.guideId, {
+        status,
+        date: emailComposerState.date,
+        subject: emailComposerState.subject,
+        body: emailComposerState.body,
+      }),
+    );
+    applyTimelineSupportData(nextTimelineData);
 
     if (activeAssignmentBooking?.id === emailComposerState.bookingId) {
-      const updatedBooking =
-        nextTimelineData.bookingsData.find((booking) => booking.id === emailComposerState.bookingId) ?? null;
+      const updatedBooking = resolveActiveAssignmentBooking(nextTimelineData, activeAssignmentBooking);
       setActiveAssignmentBooking(updatedBooking);
     }
 
@@ -892,7 +1277,9 @@ export function Timeline() {
   };
 
   const handleItemTimeSlotChange = async (itemId: string, slot: ServiceDayPart) => {
-    const nextTimelineData = await mockApi.setBookingItemTimeSlot(itemId, slot);
+    const nextTimelineData = await runTimelineApi("Updating item timing...", () =>
+      mockApi.setBookingItemTimeSlot(itemId, slot),
+    );
     applyTimelineData(nextTimelineData);
   };
 
@@ -927,9 +1314,10 @@ export function Timeline() {
 
   const handleUnassignSelectedItems = async () => {
     if (!activeAssignmentBooking || selectedItemsToAssign.size === 0) return;
-    const nextTimelineData = await mockApi.unassignBookingItems(activeAssignmentBooking.id, Array.from(selectedItemsToAssign));
-    applyTimelineData(nextTimelineData);
-    const updatedBooking = nextTimelineData.bookingsData.find((booking) => booking.id === activeAssignmentBooking.id) ?? null;
+    const nextTimelineData = await runTimelineApi("Unassigning selected items...", () =>
+      mockApi.unassignBookingItems(activeAssignmentBooking.id, Array.from(selectedItemsToAssign)),
+    );
+    const updatedBooking = syncBookingManagerMutation(nextTimelineData, activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
     setSelectedItemsToAssign(new Set());
     setSelectedGuideId(null);
@@ -1063,29 +1451,40 @@ export function Timeline() {
     let nextTimelineData;
 
     if (guideTimingModalState.mode === "select-assignment") {
-      await mockApi.assignBookingItems(
-        activeAssignmentBooking.id,
-        guideTimingModalState.guideId,
-        Array.from(selectedItemsToAssign),
+      await runTimelineApi("Assigning guide with timing...", () =>
+        mockApi.assignBookingItems(
+          activeAssignmentBooking.id,
+          guideTimingModalState.guideId,
+          Array.from(selectedItemsToAssign),
+        ),
       );
-      nextTimelineData = await mockApi.setGuideBookingTimeExceptions(
-        guideTimingModalState.bookingId,
-        guideTimingModalState.guideId,
-        entries,
+      nextTimelineData = await runTimelineApi("Saving timing exceptions...", () =>
+        mockApi.setGuideBookingTimeExceptions(
+          guideTimingModalState.bookingId,
+          guideTimingModalState.guideId,
+          entries,
+        ),
       );
       setShowGuideSelector(false);
       setSelectedItemsToAssign(new Set());
       setSelectedGuideId(null);
     } else {
-      nextTimelineData = await mockApi.setGuideBookingTimeExceptions(
-        guideTimingModalState.bookingId,
-        guideTimingModalState.guideId,
-        entries,
+      nextTimelineData = await runTimelineApi("Saving timing exceptions...", () =>
+        mockApi.setGuideBookingTimeExceptions(
+          guideTimingModalState.bookingId,
+          guideTimingModalState.guideId,
+          entries,
+        ),
       );
     }
 
-    applyTimelineData(nextTimelineData);
-    const updatedBooking = nextTimelineData.bookingsData.find((booking) => booking.id === activeAssignmentBooking.id) ?? null;
+    const updatedBooking =
+      guideTimingModalState.mode === "select-assignment"
+        ? syncBookingManagerMutation(nextTimelineData, activeAssignmentBooking)
+        : (() => {
+            applyTimelineData(nextTimelineData);
+            return resolveActiveAssignmentBooking(nextTimelineData, activeAssignmentBooking);
+          })();
     setActiveAssignmentBooking(updatedBooking);
     setGuideTimingModalState(null);
   };
@@ -1093,13 +1492,14 @@ export function Timeline() {
   const handleConfirmAssignment = async () => {
     if (!activeAssignmentBooking || !selectedGuideId) return;
 
-    const nextTimelineData = await mockApi.assignBookingItems(
-      activeAssignmentBooking.id,
-      selectedGuideId,
-      Array.from(selectedItemsToAssign),
+    const nextTimelineData = await runTimelineApi("Assigning guide...", () =>
+      mockApi.assignBookingItems(
+        activeAssignmentBooking.id,
+        selectedGuideId,
+        Array.from(selectedItemsToAssign),
+      ),
     );
-    applyTimelineData(nextTimelineData);
-    const updatedBooking = nextTimelineData.bookingsData.find((booking) => booking.id === activeAssignmentBooking.id) ?? null;
+    const updatedBooking = syncBookingManagerMutation(nextTimelineData, activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
     setShowGuideSelector(false);
     setSelectedItemsToAssign(new Set());
@@ -1120,6 +1520,12 @@ export function Timeline() {
 
   return (
     <div className="flex flex-col h-screen bg-[#C4E8FF]/20 overflow-hidden font-sans text-[#1D3663] select-none w-full">
+      {timelineLoadingCount > 0 && (
+        <LoadingOverlay
+          label={timelineLoadingLabel}
+          className="fixed inset-0 z-[150] bg-[#1D3663]/16 backdrop-blur-[2px] flex items-center justify-center p-4 transition-opacity"
+        />
+      )}
 
       {/* GLOBAL STICKY HEADER & TABS */}
       <header className="h-16 bg-white border-b border-[#C4E8FF] flex items-center justify-between px-6 shrink-0 z-50 shadow-sm sticky top-0">
@@ -1181,18 +1587,34 @@ export function Timeline() {
                   {allClients.map(c => <option key={c} value={c} />)}
                 </datalist>
 
-                <input type="text" list="timeline-countries" placeholder="Country..." value={filterCountry} onChange={(e) => { setFilterCountry(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-3 py-1.5 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none w-32" />
-                <datalist id="timeline-countries">
-                  {allCountries.map(c => <option key={c} value={c} />)}
-                </datalist>
+                <select value={selectedCountryXid} onChange={(e) => { setSelectedCountryXid(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-3 py-1.5 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none w-40">
+                  <option value="">Select country...</option>
+                  {countryOptions.map((country) => (
+                    <option key={country.xid} value={country.xid}>{country.name}</option>
+                  ))}
+                </select>
 
                 <div className="flex items-center gap-1 ml-2">
                   <span className="text-[9px] font-bold text-[#1D3663]/65 uppercase">Travel From</span>
-                  <input type="date" value={filterDateFrom} onChange={(e) => { setFilterDateFrom(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-2 py-1 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none h-[30px]" />
+                  <input
+                    type="date"
+                    value={draftFilterDateFrom}
+                    onChange={(e) => setDraftFilterDateFrom(e.target.value)}
+                    onBlur={commitCalendarDateFrom}
+                    onKeyDown={(event) => handleCalendarDateKeyDown(event, commitCalendarDateFrom)}
+                    className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-2 py-1 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none h-[30px]"
+                  />
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="text-[9px] font-bold text-[#1D3663]/65 uppercase">To</span>
-                  <input type="date" value={filterDateTo} onChange={(e) => { setFilterDateTo(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-2 py-1 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none h-[30px]" />
+                  <input
+                    type="date"
+                    value={draftFilterDateTo}
+                    onChange={(e) => setDraftFilterDateTo(e.target.value)}
+                    onBlur={commitCalendarDateTo}
+                    onKeyDown={(event) => handleCalendarDateKeyDown(event, commitCalendarDateTo)}
+                    className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-2 py-1 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none h-[30px]"
+                  />
                 </div>
 
                 <div className="flex items-center gap-2 bg-[#C4E8FF]/10 px-2 py-1.5 rounded-lg border border-[#C4E8FF] ml-2">
@@ -1201,13 +1623,33 @@ export function Timeline() {
                   <label className="text-[10px] font-bold text-[#1D3663] flex items-center gap-1 cursor-pointer"><input type="radio" name="timelineSeries" value="noseries" checked={filterSeries === 'noseries'} onChange={() => { setFilterSeries('noseries'); setGuidePage(1) }} /> No Series</label>
                 </div>
 
-                {(filterGuide || filterSearch || filterClient || filterCountry || filterDateFrom || filterDateTo || filterSeries !== "all") && (
-                  <button onClick={() => { setFilterGuide(""); setFilterSearch(""); setFilterClient(""); setFilterCountry(""); setFilterDateFrom(""); setFilterDateTo(""); setFilterSeries("all"); setGuidePage(1); }} className="text-[10px] font-bold text-[#F3796A] hover:underline uppercase ml-2">Clear Filters</button>
+                {(selectedCountryXid || filterGuide || filterSearch || filterClient || filterDateFrom || filterDateTo || filterSeries !== "all") && (
+                  <button onClick={() => {
+                    const defaultCountry = countryOptions.find(
+                      (country) => country.name.trim().toLowerCase() === DEFAULT_COUNTRY_NAME.toLowerCase(),
+                    );
+                    setFilterGuide("");
+                    setFilterSearch("");
+                    setFilterClient("");
+                    setSelectedCountryXid(defaultCountry ? String(defaultCountry.xid) : "");
+                    setFilterDateFrom(defaultMonthRange.from);
+                    setFilterDateTo(defaultMonthRange.to);
+                    setDraftFilterDateFrom(defaultMonthRange.from);
+                    setDraftFilterDateTo(defaultMonthRange.to);
+                    setFilterSeries("all");
+                    setGuidePage(1);
+                  }} className="text-[10px] font-bold text-[#F3796A] hover:underline uppercase ml-2">Clear Filters</button>
                 )}
               </div>
             </div>
 
             <div className="flex-1 min-h-0 overflow-auto relative bg-[#C4E8FF]/10 pb-10" ref={timelineScrollRef}>
+              {!selectedCountryXidNumber && (
+                <div className="px-6 py-10 text-center text-[#1D3663]/55 font-bold">
+                  Please select a country to load calendar data.
+                </div>
+              )}
+              {selectedCountryXidNumber && (
               <div className="min-w-full inline-block bg-white border-b border-[#C4E8FF]">
 
                 <div className="flex sticky top-0 z-[60] bg-white border-b border-[#C4E8FF] shadow-[0_2px_5px_rgba(0,0,0,0.02)]">
@@ -1271,9 +1713,8 @@ export function Timeline() {
                   const filteredTours = guide.tours.filter((t: any) => {
                     const matchSearch = filterSearch ? (t.ref.toLowerCase().includes(filterSearch.toLowerCase()) || t.groupName.toLowerCase().includes(filterSearch.toLowerCase())) : true;
                     const matchClient = filterClient ? t.client.toLowerCase().includes(filterClient.toLowerCase()) : true;
-                    const matchCountry = filterCountry ? t.country?.toLowerCase().includes(filterCountry.toLowerCase()) : true;
 
-                    const sName = getSeriesName(t.groupName);
+                    const sName = getBookingSeriesName(t);
                     const isSeriesTour = sName !== "NO SERIES";
                     const matchSeries = filterSeries === "series" ? isSeriesTour : filterSeries === "noseries" ? !isSeriesTour : true;
 
@@ -1288,7 +1729,7 @@ export function Timeline() {
                       } else if (filterDateFrom) { matchDate = tEnd >= new Date(`${filterDateFrom}T00:00:00`).getTime(); }
                       else if (filterDateTo) { matchDate = tStart <= new Date(`${filterDateTo}T00:00:00`).getTime(); }
                     }
-                    return matchSearch && matchClient && matchCountry && matchDate && matchSeries;
+                    return matchSearch && matchClient && matchDate && matchSeries;
                   });
 
                   const events: any[] = [];
@@ -1408,7 +1849,7 @@ export function Timeline() {
                           const leftStyle = `calc(${(daysDiff / totalDaysInYear) * 100}% + 2px)`;
                           const widthStyle = `calc(${(event.duration / totalDaysInYear) * 100}% - 4px)`;
 
-                          const seriesName = event.type === "tour" ? getSeriesName(event.data.groupName) : null;
+                          const seriesName = event.type === "tour" ? getBookingSeriesName(event.data) : null;
                           const isDimmed = hoveredSeries && seriesName && hoveredSeries !== seriesName;
 
                           const getTooltip = () => {
@@ -1455,6 +1896,7 @@ export function Timeline() {
                   );
                 })}
               </div>
+              )}
             </div>
           </div>
         )}
@@ -1464,6 +1906,9 @@ export function Timeline() {
           <TimelineBookingsTab
             allClients={allClients}
             allCountries={allCountries}
+            isLoading={isBookingsTableLoading}
+            loadingSeries={loadingBookingSeries}
+            loadingManageBookingId={loadingManageBookingId}
             modalSearchTerm={modalSearchTerm}
             modalFilterClient={modalFilterClient}
             modalFilterCountry={modalFilterCountry}
@@ -1472,8 +1917,8 @@ export function Timeline() {
             modalFilterDateTo={modalFilterDateTo}
             modalFilterSeries={modalFilterSeries}
             groupedBySeries={groupedBySeries}
+            bookingSeries={bookingSeries}
             expandedSeries={expandedSeries}
-            getSeriesStats={getSeriesStats}
             getStatusBadge={getStatusBadge}
             onSearchTermChange={setModalSearchTerm}
             onFilterClientChange={setModalFilterClient}
@@ -1486,6 +1931,7 @@ export function Timeline() {
             onToggleSeriesAccordion={toggleSeriesAccordion}
             onToggleGuideConfirmation={handleRequestGuideStatusChange}
             onManageBooking={handleOpenBookingManager}
+            onLoadMoreSeries={handleLoadMoreBookingSeries}
           />
         )}
       </main>
@@ -1689,7 +2135,9 @@ export function Timeline() {
               <button onClick={() => { setPendingDeleteBusyId(null); setPendingDeleteBusyGuideId(null); }} className="flex-1 py-3 bg-white hover:bg-[#C4E8FF]/20 text-[#1D3663] font-bold rounded-xl transition-colors border border-[#C4E8FF]">Cancel</button>
               <button onClick={async () => {
                 if (pendingDeleteBusyGuideId && pendingDeleteBusyId) {
-                  const nextTimelineData = await mockApi.removeGuideBusyDate(pendingDeleteBusyGuideId, pendingDeleteBusyId);
+                  const nextTimelineData = await runTimelineApi("Removing busy date...", () =>
+                    mockApi.removeGuideBusyDate(pendingDeleteBusyGuideId, pendingDeleteBusyId),
+                  );
                   applyTimelineData(nextTimelineData);
                 }
                 setPendingDeleteBusyId(null); setPendingDeleteBusyGuideId(null);

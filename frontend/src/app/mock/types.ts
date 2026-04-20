@@ -30,6 +30,11 @@ export type CityOption = {
   country: string;
 };
 
+export type CountryOption = {
+  xid: number;
+  name: string;
+};
+
 export type ServiceDayPart = "full-day" | "morning" | "afternoon" | "evening";
 
 export type GuideEmailStatus = "draft" | "sent";
@@ -165,6 +170,7 @@ export type GuideFormData = {
 
 export type TimelineBooking = {
   id: string;
+  series: string;
   ref: string;
   startDay: string;
   duration: number;
@@ -185,8 +191,19 @@ export type TimelineGuide = {
   timeExceptions: GuideTimeException[];
 };
 
+export type TimelineBookingSeries = {
+  series: string;
+  total: number;
+  assigned: number;
+  notAssigned: number;
+  cancelled: number;
+  onRequest: number;
+  confirmed: number;
+};
+
 export type TimelineData = {
   bookingsData: TimelineBooking[];
+  bookingSeries: TimelineBookingSeries[];
   guidesData: TimelineGuide[];
   itemAssignments: Record<string, number>;
   itemTimeSlots: Record<string, ServiceDayPart>;

@@ -16,7 +16,9 @@ builder.Services.AddSwaggerGen();
 builder.Services.Configure<DatabaseOptions>(builder.Configuration.GetSection(DatabaseOptions.SectionName));
 builder.Services.AddScoped<ISqlConnectionFactory, SqlConnectionFactory>();
 builder.Services.AddScoped<IGuideRepository, GuideRepository>();
+builder.Services.AddSingleton<IBookingManagementState, BookingManagementState>();
 builder.Services.AddScoped<ITimelineRepository, TimelineRepository>();
+builder.Services.AddScoped<IBookingsRepository, BookingsRepository>();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("frontend", policy =>

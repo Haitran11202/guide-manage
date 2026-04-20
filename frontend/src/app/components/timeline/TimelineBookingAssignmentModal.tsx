@@ -157,44 +157,59 @@ export function TimelineBookingAssignmentModal({
   }
 
   return (
-    <div className="absolute inset-0 z-[100] bg-white flex flex-col overflow-hidden animate-in fade-in duration-200">
-      <div className="pl-6 pr-3 py-3 border-b border-[#C4E8FF] flex items-center justify-between bg-white shrink-0 shadow-sm relative z-20">
-        <div className="flex items-center gap-4 min-w-0">
-          <button
-            onClick={onBack}
-            className="flex items-center gap-1 text-[#1D3663] font-bold hover:bg-[#C4E8FF]/25 px-3 py-1.5 rounded-xl border border-[#C4E8FF] transition-colors text-sm shrink-0"
-          >
-            <ChevronLeft className="w-4 h-4" /> Back
-          </button>
+    <div
+      className="fixed inset-0 z-[100] bg-[#1D3663]/28 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200"
+      onClick={onCloseBoard}
+    >
+      <div
+        className="w-full max-w-[96rem] h-[calc(100vh-2rem)] md:h-[calc(100vh-3rem)] bg-white rounded-[32px] border border-[#C4E8FF] shadow-[0_28px_80px_rgba(29,54,99,0.22)] flex flex-col overflow-hidden"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="pl-6 pr-3 py-3 border-b border-[#C4E8FF] flex items-center justify-between bg-white shrink-0 shadow-sm relative z-20">
+          <div className="flex items-center gap-4 min-w-0">
+            <button
+              onClick={onBack}
+              className="flex items-center gap-1 text-[#1D3663] font-bold hover:bg-[#C4E8FF]/25 px-3 py-1.5 rounded-xl border border-[#C4E8FF] transition-colors text-sm shrink-0"
+            >
+              <ChevronLeft className="w-4 h-4" /> Back
+            </button>
 
-          <div className="min-w-0 border border-[#C4E8FF] rounded-2xl px-4 py-2 bg-[#C4E8FF]/10">
-            <div className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/55">Booking</div>
-            <div className="text-xs font-black text-[#1D3663] truncate">{activeAssignmentBooking.ref}</div>
-            <div className="text-[10px] font-bold text-[#1D3663]/65 truncate">
-              {activeAssignmentBooking.groupName} / {activeAssignmentBooking.client}
+            <div className="min-w-0 border border-[#C4E8FF] rounded-2xl px-4 py-2 bg-[#C4E8FF]/10">
+              <div className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/55">Booking</div>
+              <div className="text-xs font-black text-[#1D3663] truncate">{activeAssignmentBooking.ref}</div>
+              <div className="text-[10px] font-bold text-[#1D3663]/65 truncate">
+                {activeAssignmentBooking.groupName} / {activeAssignmentBooking.client}
+              </div>
             </div>
+          </div>
+
+          <div className="flex items-center gap-3 md:gap-4">
+            <div className="text-right border-r border-[#C4E8FF] pr-3 md:pr-4 flex flex-col justify-center">
+              <div className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest mb-0.5">
+                Duration
+              </div>
+              <div className="text-base font-black text-[#F3796A] leading-none">
+                {activeAssignmentBooking.duration} Days
+              </div>
+            </div>
+            <button
+              onClick={onSelectAll}
+              className="bg-white hover:bg-[#C4E8FF]/20 text-[#1D3663] px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors flex items-center gap-2 border border-[#C4E8FF]"
+            >
+              <CheckSquare className="w-3.5 h-3.5" /> Select All Items
+            </button>
+            <button
+              type="button"
+              onClick={onCloseBoard}
+              className="p-2 hover:bg-[#C4E8FF]/25 rounded-full transition-colors text-[#1D3663]/55"
+              aria-label="Close booking manager"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="text-right border-r border-[#C4E8FF] pr-4 flex flex-col justify-center">
-            <div className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest mb-0.5">
-              Duration
-            </div>
-            <div className="text-base font-black text-[#F3796A] leading-none">
-              {activeAssignmentBooking.duration} Days
-            </div>
-          </div>
-          <button
-            onClick={onSelectAll}
-            className="bg-white hover:bg-[#C4E8FF]/20 text-[#1D3663] px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors flex items-center gap-2 border border-[#C4E8FF]"
-          >
-            <CheckSquare className="w-3.5 h-3.5" /> Select All Items
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 flex flex-col overflow-hidden bg-[#C4E8FF]/10 relative">
+        <div className="flex-1 flex flex-col overflow-hidden bg-[#C4E8FF]/10 relative">
         <div className="py-3 px-4 border-b border-[#C4E8FF] bg-white shrink-0 flex flex-col gap-3 shadow-sm relative z-10">
           <span className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
             Currently Assigned
@@ -546,6 +561,7 @@ export function TimelineBookingAssignmentModal({
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );

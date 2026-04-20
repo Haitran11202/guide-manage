@@ -1,23 +1,62 @@
-using System.Collections.Concurrent;
+using Dapper;
 using GuideManagement.Api.Models.Timeline;
-using Microsoft.Data.SqlClient;
 
 namespace GuideManagement.Api.Services;
 
-public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) : ITimelineRepository
+public sealed class TimelineRepository(
+    ISqlConnectionFactory connectionFactory,
+    IBookingManagementState bookingManagementState) : ITimelineRepository
 {
-    private static readonly ConcurrentDictionary<string, int> ItemAssignmentOverrides = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly ConcurrentDictionary<string, string> ItemTimeSlotOverrides = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly ConcurrentDictionary<string, IReadOnlyList<GuideTimeExceptionDto>> GuideTimeExceptionOverrides =
-        new(StringComparer.OrdinalIgnoreCase);
+    private const int BookingSeriesPageSize = 10;
 
-    public async Task<TimelineDataDto> GetTimelineAsync(DateOnly? from, DateOnly? to, CancellationToken cancellationToken)
+    public async Task<TimelineDataDto> GetTimelineAsync(
+        DateOnly? from,
+        DateOnly? to,
+        int? countryXid,
+        string? search,
+        string? client,
+        string? country,
+        string? guide,
+        string? series,
+        string? loadSeries,
+        int? seriesSkip,
+        int? seriesTake,
+        CancellationToken cancellationToken)
     {
         var (rangeStart, rangeEnd) = NormalizeRange(from, to);
         var bookings = await GetBookingsAsync(rangeStart, rangeEnd, cancellationToken);
-        var guides = await GetGuidesAsync(cancellationToken);
-        var relations = await GetGuideRelationsAsync(rangeStart, rangeEnd, cancellationToken);
+        var guides = await GetGuidesAsync(countryXid, cancellationToken);
+        var relations = await GetGuideRelationsAsync(rangeStart, rangeEnd, countryXid, cancellationToken);
 
+        return BuildTimelineData(
+            bookings,
+            guides,
+            relations,
+            countryXid.HasValue,
+            search,
+            client,
+            country,
+            guide,
+            series,
+            loadSeries,
+            seriesSkip,
+            seriesTake);
+    }
+
+    private TimelineDataDto BuildTimelineData(
+        IReadOnlyList<TimelineBookingDto> bookings,
+        IReadOnlyList<TimelineGuideDto> guides,
+        IReadOnlyList<GuideRelation> relations,
+        bool restrictToBookingsWithAssignedGuides,
+        string? search,
+        string? client,
+        string? country,
+        string? guide,
+        string? series,
+        string? loadSeries,
+        int? seriesSkip,
+        int? seriesTake)
+    {
         var guideNameById = guides.ToDictionary(item => item.Id, item => item.Name);
 
         var assignedGuideIdsByBooking = new Dictionary<string, HashSet<int>>(StringComparer.OrdinalIgnoreCase);
@@ -59,13 +98,18 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
             }
         }
 
-        var itemAssignments = BuildBaseItemAssignments(bookings, assignedGuideIdsByBooking);
+        var bookingsForTimeline = restrictToBookingsWithAssignedGuides
+            ? bookings.Where(booking => assignedGuideIdsByBooking.ContainsKey(booking.Id)).ToArray()
+            : bookings;
+
+        var itemManagedBookingIds = bookingManagementState.ItemManagedBookingIds.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var itemAssignments = BuildBaseItemAssignments(bookingsForTimeline, assignedGuideIdsByBooking, itemManagedBookingIds);
         ApplyItemAssignmentOverrides(itemAssignments);
 
         var itemTimeSlots = BuildItemTimeSlots(itemAssignments.Keys);
         var guideTimeExceptions = GetGuideTimeExceptionsFromOverrides();
 
-        var bookingsData = bookings
+        var filteredBookings = bookingsForTimeline
             .Select(booking =>
             {
                 var assignedGuideIds = GetAssignedGuideIdsForBooking(itemAssignments, booking.Id).ToHashSet();
@@ -76,6 +120,7 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
                 return new TimelineBookingDto
                 {
                     Id = booking.Id,
+                    Series = booking.Series,
                     Ref = booking.Ref,
                     StartDay = booking.StartDay,
                     Duration = booking.Duration,
@@ -96,7 +141,56 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
                         .ToArray()
                 };
             })
+            .Where(booking => MatchesBookingFilters(booking, search, client, country, guide, series))
             .ToArray();
+
+        var bookingsBySeries = filteredBookings
+            .GroupBy(booking => string.IsNullOrWhiteSpace(booking.Series) ? "NO SERIES" : booking.Series)
+            .ToDictionary(group => group.Key, group => group.OrderBy(booking => booking.StartDay).ToArray());
+
+        var bookingSeries = bookingsBySeries
+            .Select(group =>
+            {
+                var items = group.Value;
+                var total = items.Length;
+                var assigned = items.Count(item => item.AssignedGuides.Count > 0);
+                return new TimelineBookingSeriesDto
+                {
+                    Series = group.Key,
+                    Total = total,
+                    Assigned = assigned,
+                    NotAssigned = total - assigned,
+                    Cancelled = items.Count(item => item.Status.Contains("cancel", StringComparison.OrdinalIgnoreCase)),
+                    OnRequest = items.Count(item => item.Status.Contains("request", StringComparison.OrdinalIgnoreCase)),
+                    Confirmed = items.Count(item =>
+                        item.Status.Equals("confirmed", StringComparison.OrdinalIgnoreCase) ||
+                        item.Status.Equals("paid", StringComparison.OrdinalIgnoreCase) ||
+                        item.Status.Equals("book", StringComparison.OrdinalIgnoreCase) ||
+                        item.Status.Equals("booked", StringComparison.OrdinalIgnoreCase))
+                };
+            })
+            .OrderBy(item => item.Series)
+            .ToArray();
+
+        IReadOnlyList<TimelineBookingDto> bookingsData;
+        if (!string.IsNullOrWhiteSpace(loadSeries))
+        {
+            var normalizedSeries = loadSeries.Trim();
+            var skip = Math.Max(0, seriesSkip ?? 0);
+            var take = Math.Max(1, seriesTake ?? BookingSeriesPageSize);
+            bookingsData = bookingsBySeries.TryGetValue(normalizedSeries, out var seriesBookings)
+                ? seriesBookings.Skip(skip).Take(take).ToArray()
+                : [];
+        }
+        else
+        {
+            var take = Math.Max(1, seriesTake ?? BookingSeriesPageSize);
+            bookingsData = bookingSeries
+                .SelectMany(seriesMeta => bookingsBySeries.TryGetValue(seriesMeta.Series, out var seriesBookings)
+                    ? seriesBookings.Take(take)
+                    : [])
+                .ToArray();
+        }
 
         var guideExceptionsByGuide = guideTimeExceptions
             .GroupBy(item => item.GuideId)
@@ -118,6 +212,7 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
         return new TimelineDataDto
         {
             BookingsData = bookingsData,
+            BookingSeries = bookingSeries,
             GuidesData = guidesData,
             ItemAssignments = itemAssignments,
             ItemTimeSlots = itemTimeSlots,
@@ -126,17 +221,19 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
         };
     }
 
-    public async Task<TimelineDataDto> SetBookingGuideConfirmationAsync(BookingGuideConfirmationRequest request, CancellationToken cancellationToken)
+    public async Task<TimelineDataDto> SetBookingGuideConfirmationAsync(
+        BookingGuideConfirmationRequest request,
+        CancellationToken cancellationToken)
     {
         if (!int.TryParse(request.BookingId, out var bookingPid))
         {
-            return await GetTimelineAsync(null, null, cancellationToken);
+            return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         }
 
         var guideId = await GetGuideIdByNameAsync(request.GuideName, cancellationToken);
         if (!guideId.HasValue)
         {
-            return await GetTimelineAsync(null, null, cancellationToken);
+            return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         }
 
         const string sql = """
@@ -156,21 +253,26 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(sql, connection);
-        command.Parameters.AddWithValue("@BookingPid", bookingPid);
-        command.Parameters.AddWithValue("@GuideId", guideId.Value);
-        command.Parameters.AddWithValue("@SendSMS", request.Confirmed ? "Y" : "N");
-        command.Parameters.AddWithValue("@SendSMSDate", request.Confirmed ? DateTime.UtcNow : (object)DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await connection.ExecuteAsync(
+            new CommandDefinition(
+                sql,
+                new
+                {
+                    BookingPid = bookingPid,
+                    GuideId = guideId.Value,
+                    SendSMS = request.Confirmed ? "Y" : "N",
+                    SendSMSDate = request.Confirmed ? (DateTime?)DateTime.UtcNow : null
+                },
+                cancellationToken: cancellationToken));
 
-        return await GetTimelineAsync(null, null, cancellationToken);
+        return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
 
     public async Task<TimelineDataDto> AddGuideBusyDateAsync(GuideBusyDateRequest request, CancellationToken cancellationToken)
     {
         if (!request.From.HasValue || !request.To.HasValue)
         {
-            return await GetTimelineAsync(null, null, cancellationToken);
+            return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         }
 
         var currentDate = request.From.Value;
@@ -180,7 +282,7 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
             currentDate = currentDate.AddDays(1);
         }
 
-        return await GetTimelineAsync(null, null, cancellationToken);
+        return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
 
     public async Task<TimelineDataDto> RemoveGuideBusyDateAsync(int guideId, string busyDateId, CancellationToken cancellationToken)
@@ -188,7 +290,7 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
         var pid = ParseBusyPid(busyDateId);
         if (!pid.HasValue)
         {
-            return await GetTimelineAsync(null, null, cancellationToken);
+            return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         }
 
         const string sql = """
@@ -198,53 +300,64 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(sql, connection);
-        command.Parameters.AddWithValue("@Pid", pid.Value);
-        command.Parameters.AddWithValue("@GuideId", guideId);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await connection.ExecuteAsync(
+            new CommandDefinition(
+                sql,
+                new
+                {
+                    Pid = pid.Value,
+                    GuideId = guideId
+                },
+                cancellationToken: cancellationToken));
 
-        return await GetTimelineAsync(null, null, cancellationToken);
+        return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
 
     public async Task<TimelineDataDto> SetBookingItemTimeSlotAsync(BookingItemTimeSlotRequest request, CancellationToken cancellationToken)
     {
-        ItemTimeSlotOverrides[request.ItemId] = request.Slot;
-        return await GetTimelineAsync(null, null, cancellationToken);
+        bookingManagementState.ItemTimeSlotOverrides[request.ItemId] = request.Slot;
+        return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
 
     public async Task<TimelineDataDto> AssignBookingItemsAsync(AssignBookingItemsRequest request, CancellationToken cancellationToken)
     {
+        bookingManagementState.ItemManagedBookingIds[request.BookingId] = 1;
+
         foreach (var itemId in request.ItemIds.Where(itemId => itemId.StartsWith($"{request.BookingId}-", StringComparison.OrdinalIgnoreCase)))
         {
-            ItemAssignmentOverrides[itemId] = request.GuideId;
-            ItemTimeSlotOverrides.TryAdd(itemId, "full-day");
+            bookingManagementState.ItemAssignmentOverrides[itemId] = request.GuideId;
+            bookingManagementState.ItemTimeSlotOverrides.TryAdd(itemId, "full-day");
         }
 
         if (int.TryParse(request.BookingId, out var bookingPid))
         {
             await EnsureGuideRelationAsync(bookingPid, request.GuideId, cancellationToken);
-            await SetPrimaryGuideAsync(bookingPid, request.GuideId, cancellationToken);
         }
 
-        return await GetTimelineAsync(null, null, cancellationToken);
+        return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
 
     public async Task<TimelineDataDto> UnassignBookingItemsAsync(UnassignBookingItemsRequest request, CancellationToken cancellationToken)
     {
+        bookingManagementState.ItemManagedBookingIds[request.BookingId] = 1;
+
         foreach (var itemId in request.ItemIds.Where(itemId => itemId.StartsWith($"{request.BookingId}-", StringComparison.OrdinalIgnoreCase)))
         {
-            ItemAssignmentOverrides[itemId] = 0;
+            bookingManagementState.ItemAssignmentOverrides[itemId] = 0;
         }
 
-        return await GetTimelineAsync(null, null, cancellationToken);
+        return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
 
-    public async Task<TimelineDataDto> UnassignGuideFromBookingAsync(string bookingId, string guideName, CancellationToken cancellationToken)
+    public async Task<TimelineDataDto> UnassignGuideFromBookingAsync(
+        string bookingId,
+        string guideName,
+        CancellationToken cancellationToken)
     {
         var guideId = await GetGuideIdByNameAsync(guideName, cancellationToken);
         if (!guideId.HasValue || !int.TryParse(bookingId, out var bookingPid))
         {
-            return await GetTimelineAsync(null, null, cancellationToken);
+            return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         }
 
         const string deleteRelationSql = """
@@ -260,39 +373,46 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
+        await connection.ExecuteAsync(
+            new CommandDefinition(
+                deleteRelationSql,
+                new
+                {
+                    BookingPid = bookingPid,
+                    GuideId = guideId.Value
+                },
+                cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(
+            new CommandDefinition(
+                resetPrimarySql,
+                new
+                {
+                    BookingPid = bookingPid,
+                    GuideId = guideId.Value
+                },
+                cancellationToken: cancellationToken));
 
-        await using (var deleteRelationCommand = new SqlCommand(deleteRelationSql, connection))
-        {
-            deleteRelationCommand.Parameters.AddWithValue("@BookingPid", bookingPid);
-            deleteRelationCommand.Parameters.AddWithValue("@GuideId", guideId.Value);
-            await deleteRelationCommand.ExecuteNonQueryAsync(cancellationToken);
-        }
-
-        await using (var resetPrimaryCommand = new SqlCommand(resetPrimarySql, connection))
-        {
-            resetPrimaryCommand.Parameters.AddWithValue("@BookingPid", bookingPid);
-            resetPrimaryCommand.Parameters.AddWithValue("@GuideId", guideId.Value);
-            await resetPrimaryCommand.ExecuteNonQueryAsync(cancellationToken);
-        }
-
-        var timeline = await GetTimelineAsync(null, null, cancellationToken);
+        var timeline = await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
+        bookingManagementState.ItemManagedBookingIds[bookingId] = 1;
         foreach (var key in timeline.ItemAssignments
                      .Where(entry => entry.Key.StartsWith($"{bookingId}-", StringComparison.OrdinalIgnoreCase) && entry.Value == guideId.Value)
                      .Select(entry => entry.Key))
         {
-            ItemAssignmentOverrides[key] = 0;
+            bookingManagementState.ItemAssignmentOverrides[key] = 0;
         }
 
-        GuideTimeExceptionOverrides.TryRemove($"{bookingId}-{guideId.Value}", out _);
+        bookingManagementState.GuideTimeExceptionOverrides.TryRemove($"{bookingId}-{guideId.Value}", out _);
 
-        return await GetTimelineAsync(null, null, cancellationToken);
+        return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
 
-    public async Task<TimelineDataDto> SetGuideEmailRecordAsync(GuideEmailRecordUpsertRequest request, CancellationToken cancellationToken)
+    public async Task<TimelineDataDto> SetGuideEmailRecordAsync(
+        GuideEmailRecordUpsertRequest request,
+        CancellationToken cancellationToken)
     {
         if (!int.TryParse(request.BookingId, out var bookingPid))
         {
-            return await GetTimelineAsync(null, null, cancellationToken);
+            return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         }
 
         const string sql = """
@@ -313,35 +433,48 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(sql, connection);
-        command.Parameters.AddWithValue("@BookingPid", bookingPid);
-        command.Parameters.AddWithValue("@GuideId", request.GuideId);
-        command.Parameters.AddWithValue("@Message", request.Body ?? string.Empty);
-        command.Parameters.AddWithValue("@SendSMS", string.Equals(request.Status, "sent", StringComparison.OrdinalIgnoreCase) ? "Y" : "N");
-        command.Parameters.AddWithValue("@SendSMSDate", request.Date?.ToDateTime(TimeOnly.MinValue) ?? (object)DBNull.Value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await connection.ExecuteAsync(
+            new CommandDefinition(
+                sql,
+                new
+                {
+                    BookingPid = bookingPid,
+                    GuideId = request.GuideId,
+                    Message = request.Body ?? string.Empty,
+                    SendSMS = string.Equals(request.Status, "sent", StringComparison.OrdinalIgnoreCase) ? "Y" : "N",
+                    SendSMSDate = request.Date?.ToDateTime(TimeOnly.MinValue)
+                },
+                cancellationToken: cancellationToken));
 
-        return await GetTimelineAsync(null, null, cancellationToken);
+        return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
 
-    public async Task<TimelineDataDto> SetGuideBookingTimeExceptionsAsync(GuideTimeExceptionsUpsertRequest request, CancellationToken cancellationToken)
+    public async Task<TimelineDataDto> SetGuideBookingTimeExceptionsAsync(
+        GuideTimeExceptionsUpsertRequest request,
+        CancellationToken cancellationToken)
     {
         var key = $"{request.BookingId}-{request.GuideId}";
         var entries = request.Entries
             .Where(entry => entry.Date.HasValue && entry.StartHour < entry.EndHour)
-            .Select(entry => new GuideTimeExceptionDto
-            {
-                Id = $"gte-{request.BookingId}-{request.GuideId}-{entry.Date:yyyy-MM-dd}",
-                BookingId = request.BookingId,
-                GuideId = request.GuideId,
-                Date = entry.Date,
-                StartHour = entry.StartHour,
-                EndHour = entry.EndHour
-            })
+            .Select(entry => new GuideTimeExceptionOverrideEntry(
+                $"gte-{request.BookingId}-{request.GuideId}-{entry.Date:yyyy-MM-dd}",
+                request.BookingId,
+                request.GuideId,
+                entry.Date,
+                entry.StartHour,
+                entry.EndHour))
             .ToArray();
 
-        GuideTimeExceptionOverrides[key] = entries;
-        return await GetTimelineAsync(null, null, cancellationToken);
+        if (entries.Length == 0)
+        {
+            bookingManagementState.GuideTimeExceptionOverrides.TryRemove(key, out _);
+        }
+        else
+        {
+            bookingManagementState.GuideTimeExceptionOverrides[key] = entries;
+        }
+
+        return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
 
     private async Task<IReadOnlyList<TimelineBookingDto>> GetBookingsAsync(
@@ -350,116 +483,117 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
         CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT TOP (400)
-                rh.Pid,
-                rh.RefId,
-                rh.SubResNo,
-                rh.ArrDate,
-                rh.NoOfNights,
-                rh.PartyName,
-                rh.ServiceName,
+            SELECT
+                rh.Pid AS Id,
+                CAST(rh.RefId AS nvarchar(50)) AS RefId,
+                CAST(rh.SubResNo AS nvarchar(50)) AS SubResNo,
+                rh.ArrDate AS StartDay,
+                CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END AS Duration,
+                CAST(ISNULL(rh.PartyName, '') AS nvarchar(255)) AS Client,
+                CAST(ISNULL(rh.ServiceName, '') AS nvarchar(255)) AS ServiceName,
                 rh.StatusXid,
                 rh.CountryXid,
-                rh.Holiday
+                CAST(ISNULL(rh.Holiday, '') AS nvarchar(255)) AS Holiday,
+                LTRIM(RTRIM(ISNULL(mc.Country, ''))) AS Country
             FROM dbo.Res_Holidays rh
+            LEFT JOIN dbo.M_Country mc ON mc.Pid = rh.CountryXid
             WHERE rh.ArrDate IS NOT NULL
               AND rh.ArrDate <= @RangeEnd
               AND DATEADD(day, CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END, rh.ArrDate) >= @RangeStart
             ORDER BY rh.ArrDate, rh.Pid;
             """;
 
-        var result = new List<TimelineBookingDto>();
-
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(sql, connection);
-        command.Parameters.AddWithValue("@RangeStart", rangeStart.ToDateTime(TimeOnly.MinValue));
-        command.Parameters.AddWithValue("@RangeEnd", rangeEnd.ToDateTime(TimeOnly.MinValue));
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rows = await connection.QueryAsync<TimelineBookingRow>(
+            new CommandDefinition(
+                sql,
+                new
+                {
+                    RangeStart = rangeStart.ToDateTime(TimeOnly.MinValue),
+                    RangeEnd = rangeEnd.ToDateTime(TimeOnly.MinValue)
+                },
+                cancellationToken: cancellationToken));
 
-        while (await reader.ReadAsync(cancellationToken))
+        return rows.Select(row =>
         {
-            var pid = reader.GetInt32(0);
-            var refId = reader.IsDBNull(1) ? string.Empty : reader.GetInt32(1).ToString();
-            var subResNo = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
-            var noOfNights = reader.IsDBNull(4) ? 1 : reader.GetInt32(4);
-            var serviceName = reader.IsDBNull(6) ? string.Empty : reader.GetString(6);
-            var holiday = reader.IsDBNull(9) ? string.Empty : reader.GetString(9);
+            var subResNo = row.SubResNo?.Trim() ?? string.Empty;
+            var refId = row.RefId?.Trim() ?? string.Empty;
+            var groupName = string.IsNullOrWhiteSpace(subResNo)
+                ? row.Client ?? string.Empty
+                : subResNo;
 
-            result.Add(new TimelineBookingDto
+            return new TimelineBookingDto
             {
-                Id = pid.ToString(),
+                Id = row.Id.ToString(),
+                Series = DeriveSeriesFromGroupName(groupName),
                 Ref = string.IsNullOrWhiteSpace(refId)
-                    ? (string.IsNullOrWhiteSpace(subResNo) ? $"BOOKING-{pid}" : subResNo)
+                    ? (string.IsNullOrWhiteSpace(subResNo) ? $"BOOKING-{row.Id}" : subResNo)
                     : string.IsNullOrWhiteSpace(subResNo) ? refId : $"{refId} - {subResNo}",
-                StartDay = reader.IsDBNull(3) ? null : DateOnly.FromDateTime(reader.GetDateTime(3)),
-                Duration = Math.Max(1, noOfNights),
-                Client = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
-                GroupName = string.IsNullOrWhiteSpace(subResNo)
-                    ? (reader.IsDBNull(5) ? string.Empty : reader.GetString(5))
-                    : subResNo,
-                TourName = !string.IsNullOrWhiteSpace(serviceName) ? serviceName : holiday,
-                Status = MapBookingStatus(reader.IsDBNull(7) ? (int?)null : reader.GetInt32(7)),
-                Country = reader.IsDBNull(8) ? string.Empty : $"Country {reader.GetInt32(8)}",
+                StartDay = row.StartDay is null ? null : DateOnly.FromDateTime(row.StartDay.Value),
+                Duration = Math.Max(1, row.Duration),
+                Client = row.Client ?? string.Empty,
+                GroupName = groupName,
+                TourName = !string.IsNullOrWhiteSpace(row.ServiceName) ? row.ServiceName : row.Holiday ?? string.Empty,
+                Status = MapBookingStatus(row.StatusXid),
+                Country = !string.IsNullOrWhiteSpace(row.Country)
+                    ? row.Country
+                    : row.CountryXid.HasValue ? $"Country {row.CountryXid.Value}" : string.Empty,
                 AssignedGuides = [],
                 ConfirmedGuides = []
-            });
-        }
-
-        return result;
+            };
+        }).ToArray();
     }
 
-    private async Task<IReadOnlyList<TimelineGuideDto>> GetGuidesAsync(CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<TimelineGuideDto>> GetGuidesAsync(int? countryXid, CancellationToken cancellationToken)
     {
         const string sql = """
             SELECT
-                g.Pid,
-                g.Guide,
-                g.ExactCode
+                g.Pid AS Id,
+                CAST(ISNULL(g.Guide, '') AS nvarchar(255)) AS Name,
+                LTRIM(RTRIM(ISNULL(g.ExactCode, ''))) AS ExactCode
             FROM dbo.M_SupplierGuide g
+            WHERE @CountryXid IS NULL OR g.CountryXid = @CountryXid
             ORDER BY g.Guide;
             """;
 
         var busyDatesByGuide = await GetGuideBusyDatesMapAsync(cancellationToken);
-        var result = new List<TimelineGuideDto>();
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(sql, connection);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rows = await connection.QueryAsync<GuideRow>(
+            new CommandDefinition(
+                sql,
+                new { CountryXid = countryXid },
+                cancellationToken: cancellationToken));
 
-        while (await reader.ReadAsync(cancellationToken))
+        return rows.Select(row => new TimelineGuideDto
         {
-            var guideId = reader.GetInt32(0);
-            var exactCode = reader.IsDBNull(2) ? string.Empty : reader.GetString(2).Trim();
-
-            result.Add(new TimelineGuideDto
-            {
-                Id = guideId,
-                Name = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
-                Tags = string.IsNullOrWhiteSpace(exactCode) ? [] : [exactCode],
-                BusyDates = busyDatesByGuide.TryGetValue(guideId, out var busyDates) ? busyDates : [],
-                TimeExceptions = []
-            });
-        }
-
-        return result;
+            Id = row.Id,
+            Name = row.Name,
+            Tags = string.IsNullOrWhiteSpace(row.ExactCode) ? [] : [row.ExactCode],
+            BusyDates = busyDatesByGuide.TryGetValue(row.Id, out var busyDates) ? busyDates : [],
+            TimeExceptions = []
+        }).ToArray();
     }
 
     private async Task<IReadOnlyList<GuideRelation>> GetGuideRelationsAsync(
         DateOnly rangeStart,
         DateOnly rangeEnd,
+        int? countryXid,
         CancellationToken cancellationToken)
     {
         const string sql = """
             SELECT
                 CAST(rh.Pid AS varchar(20)) AS BookingId,
-                rh.GuideXid,
+                rh.GuideXid AS GuideId,
                 CAST(NULL AS char(1)) AS SendSMS,
                 CAST(NULL AS nvarchar(MAX)) AS Message,
                 CAST(NULL AS datetime) AS SendSMSDate
             FROM dbo.Res_Holidays rh
+            INNER JOIN dbo.M_SupplierGuide g ON g.Pid = rh.GuideXid
             WHERE rh.GuideXid IS NOT NULL
+              AND (@CountryXid IS NULL OR g.CountryXid = @CountryXid)
               AND rh.ArrDate IS NOT NULL
               AND rh.ArrDate <= @RangeEnd
               AND DATEADD(day, CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END, rh.ArrDate) >= @RangeStart
@@ -468,39 +602,40 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
 
             SELECT
                 CAST(hg.ResHolidayXid AS varchar(20)) AS BookingId,
-                hg.SupplierGuideXid,
+                hg.SupplierGuideXid AS GuideId,
                 hg.SendSMS,
                 hg.Message,
                 hg.SendSMSDate
             FROM dbo.Res_HolidayGuide hg
             INNER JOIN dbo.Res_Holidays rh ON rh.Pid = hg.ResHolidayXid
+            INNER JOIN dbo.M_SupplierGuide g ON g.Pid = hg.SupplierGuideXid
             WHERE hg.SupplierGuideXid IS NOT NULL
               AND hg.ResHolidayXid IS NOT NULL
+              AND (@CountryXid IS NULL OR g.CountryXid = @CountryXid)
               AND rh.ArrDate IS NOT NULL
               AND rh.ArrDate <= @RangeEnd
               AND DATEADD(day, CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END, rh.ArrDate) >= @RangeStart;
             """;
 
-        var result = new List<GuideRelation>();
-
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(sql, connection);
-        command.Parameters.AddWithValue("@RangeStart", rangeStart.ToDateTime(TimeOnly.MinValue));
-        command.Parameters.AddWithValue("@RangeEnd", rangeEnd.ToDateTime(TimeOnly.MinValue));
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rows = await connection.QueryAsync<GuideRelationRow>(
+            new CommandDefinition(
+                sql,
+                new
+                {
+                    RangeStart = rangeStart.ToDateTime(TimeOnly.MinValue),
+                    RangeEnd = rangeEnd.ToDateTime(TimeOnly.MinValue),
+                    CountryXid = countryXid
+                },
+                cancellationToken: cancellationToken));
 
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            result.Add(new GuideRelation(
-                reader.GetString(0),
-                reader.GetInt32(1),
-                IsConfirmed(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
-                reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
-                reader.IsDBNull(4) ? null : DateOnly.FromDateTime(reader.GetDateTime(4))));
-        }
-
-        return result;
+        return rows.Select(row => new GuideRelation(
+            row.BookingId,
+            row.GuideId,
+            row.IsConfirmed,
+            row.Message ?? string.Empty,
+            row.MessageDate)).ToArray();
     }
 
     private async Task<Dictionary<int, IReadOnlyList<BusyDateDto>>> GetGuideBusyDatesMapAsync(CancellationToken cancellationToken)
@@ -508,54 +643,43 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
         const string sql = """
             SELECT
                 gb.Pid,
-                gb.SupplierGuideXid,
+                gb.SupplierGuideXid AS GuideId,
                 gb.[Date],
                 gb.Busy
             FROM dbo.M_GuideBusy gb;
             """;
 
-        var result = new Dictionary<int, List<BusyDateDto>>();
-
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(sql, connection);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rows = await connection.QueryAsync<BusyDateRow>(new CommandDefinition(sql, cancellationToken: cancellationToken));
 
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var busyFlag = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
-            if (!IsConfirmed(busyFlag))
-            {
-                continue;
-            }
-
-            var guideId = reader.GetInt32(1);
-            if (!result.TryGetValue(guideId, out var busyDates))
-            {
-                busyDates = [];
-                result[guideId] = busyDates;
-            }
-
-            var date = DateOnly.FromDateTime(reader.GetDateTime(2));
-            busyDates.Add(new BusyDateDto
-            {
-                Id = $"busy-{reader.GetInt32(0)}",
-                From = date,
-                To = date
-            });
-        }
-
-        return result.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<BusyDateDto>)pair.Value);
+        return rows
+            .Where(row => IsConfirmed(row.Busy))
+            .GroupBy(row => row.GuideId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<BusyDateDto>)group.Select(row => new BusyDateDto
+                {
+                    Id = $"busy-{row.Pid}",
+                    From = DateOnly.FromDateTime(row.Date),
+                    To = DateOnly.FromDateTime(row.Date)
+                }).ToArray());
     }
 
-    private static Dictionary<string, int> BuildBaseItemAssignments(
+    private Dictionary<string, int> BuildBaseItemAssignments(
         IReadOnlyList<TimelineBookingDto> bookings,
-        IReadOnlyDictionary<string, HashSet<int>> assignedGuideIdsByBooking)
+        IReadOnlyDictionary<string, HashSet<int>> assignedGuideIdsByBooking,
+        ISet<string> itemManagedBookingIds)
     {
         var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var booking in bookings)
         {
+            if (itemManagedBookingIds.Contains(booking.Id))
+            {
+                continue;
+            }
+
             if (!assignedGuideIdsByBooking.TryGetValue(booking.Id, out var guideIds) || guideIds.Count == 0)
             {
                 continue;
@@ -574,9 +698,9 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
         return result;
     }
 
-    private static void ApplyItemAssignmentOverrides(IDictionary<string, int> itemAssignments)
+    private void ApplyItemAssignmentOverrides(IDictionary<string, int> itemAssignments)
     {
-        foreach (var overrideEntry in ItemAssignmentOverrides)
+        foreach (var overrideEntry in bookingManagementState.ItemAssignmentOverrides)
         {
             if (overrideEntry.Value <= 0)
             {
@@ -588,7 +712,7 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
         }
     }
 
-    private static IReadOnlyDictionary<string, string> BuildItemTimeSlots(IEnumerable<string> itemIds)
+    private IReadOnlyDictionary<string, string> BuildItemTimeSlots(IEnumerable<string> itemIds)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var itemId in itemIds)
@@ -596,7 +720,7 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
             result[itemId] = "full-day";
         }
 
-        foreach (var overrideEntry in ItemTimeSlotOverrides)
+        foreach (var overrideEntry in bookingManagementState.ItemTimeSlotOverrides)
         {
             result[overrideEntry.Key] = overrideEntry.Value;
         }
@@ -604,7 +728,9 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
         return result;
     }
 
-    private static IReadOnlyList<int> GetAssignedGuideIdsForBooking(IReadOnlyDictionary<string, int> itemAssignments, string bookingId)
+    private static IReadOnlyList<int> GetAssignedGuideIdsForBooking(
+        IReadOnlyDictionary<string, int> itemAssignments,
+        string bookingId)
     {
         return itemAssignments
             .Where(entry => entry.Key.StartsWith($"{bookingId}-", StringComparison.OrdinalIgnoreCase))
@@ -637,10 +763,19 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
         return itemIds;
     }
 
-    private static IReadOnlyList<GuideTimeExceptionDto> GetGuideTimeExceptionsFromOverrides()
+    private IReadOnlyList<GuideTimeExceptionDto> GetGuideTimeExceptionsFromOverrides()
     {
-        return GuideTimeExceptionOverrides
+        return bookingManagementState.GuideTimeExceptionOverrides
             .SelectMany(entry => entry.Value)
+            .Select(entry => new GuideTimeExceptionDto
+            {
+                Id = entry.Id,
+                BookingId = entry.BookingId,
+                GuideId = entry.GuideId,
+                Date = entry.Date,
+                StartHour = entry.StartHour,
+                EndHour = entry.EndHour
+            })
             .ToArray();
     }
 
@@ -674,15 +809,17 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-
-        await using var nextPidCommand = new SqlCommand(nextPidSql, connection);
-        var nextPid = Convert.ToInt32(await nextPidCommand.ExecuteScalarAsync(cancellationToken));
-
-        await using var insertCommand = new SqlCommand(insertSql, connection);
-        insertCommand.Parameters.AddWithValue("@Pid", nextPid);
-        insertCommand.Parameters.AddWithValue("@GuideId", guideId);
-        insertCommand.Parameters.AddWithValue("@Date", date.ToDateTime(TimeOnly.MinValue));
-        await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        var nextPid = await connection.ExecuteScalarAsync<int>(new CommandDefinition(nextPidSql, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(
+            new CommandDefinition(
+                insertSql,
+                new
+                {
+                    Pid = nextPid,
+                    GuideId = guideId,
+                    Date = date.ToDateTime(TimeOnly.MinValue)
+                },
+                cancellationToken: cancellationToken));
     }
 
     private async Task EnsureGuideRelationAsync(int bookingPid, int guideId, CancellationToken cancellationToken)
@@ -698,43 +835,32 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(sql, connection);
-        command.Parameters.AddWithValue("@BookingPid", bookingPid);
-        command.Parameters.AddWithValue("@GuideId", guideId);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    private async Task SetPrimaryGuideAsync(int bookingPid, int guideId, CancellationToken cancellationToken)
-    {
-        const string sql = """
-            UPDATE dbo.Res_Holidays
-            SET GuideXid = @GuideId
-            WHERE Pid = @BookingPid;
-            """;
-
-        await using var connection = connectionFactory.CreateConnection();
-        await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(sql, connection);
-        command.Parameters.AddWithValue("@GuideId", guideId);
-        command.Parameters.AddWithValue("@BookingPid", bookingPid);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await connection.ExecuteAsync(
+            new CommandDefinition(
+                sql,
+                new
+                {
+                    BookingPid = bookingPid,
+                    GuideId = guideId
+                },
+                cancellationToken: cancellationToken));
     }
 
     private async Task<int?> GetGuideIdByNameAsync(string guideName, CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT TOP(1) g.Pid
+            SELECT TOP (1) g.Pid
             FROM dbo.M_SupplierGuide g
             WHERE g.Guide = @GuideName;
             """;
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = new SqlCommand(sql, connection);
-        command.Parameters.AddWithValue("@GuideName", guideName);
-
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is null || result == DBNull.Value ? null : Convert.ToInt32(result);
+        return await connection.QueryFirstOrDefaultAsync<int?>(
+            new CommandDefinition(
+                sql,
+                new { GuideName = guideName },
+                cancellationToken: cancellationToken));
     }
 
     private static int? ParseBusyPid(string busyDateId)
@@ -765,11 +891,107 @@ public sealed class TimelineRepository(ISqlConnectionFactory connectionFactory) 
         };
     }
 
-    private static bool IsConfirmed(string flag)
+    private static bool IsConfirmed(string? flag)
     {
-        var normalized = flag.Trim().ToUpperInvariant();
+        var normalized = (flag ?? string.Empty).Trim().ToUpperInvariant();
         return normalized is "Y" or "1" or "T";
     }
+
+    private static bool MatchesBookingFilters(
+        TimelineBookingDto booking,
+        string? search,
+        string? client,
+        string? country,
+        string? guide,
+        string? series)
+    {
+        if (!ContainsIgnoreCase(booking.Ref, search) && !ContainsIgnoreCase(booking.GroupName, search) && !string.IsNullOrWhiteSpace(search))
+        {
+            return false;
+        }
+
+        if (!ContainsIgnoreCase(booking.Client, client))
+        {
+            return false;
+        }
+
+        if (!ContainsIgnoreCase(booking.Country, country))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(guide) &&
+            !(booking.AssignedGuides?.Any(guideName => ContainsIgnoreCase(guideName, guide)) ?? false))
+        {
+            return false;
+        }
+
+        var normalizedSeries = (series ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalizedSeries is "series" or "noseries")
+        {
+            var hasSeries = !string.Equals(booking.Series, "NO SERIES", StringComparison.OrdinalIgnoreCase);
+            if (normalizedSeries == "series" && !hasSeries)
+            {
+                return false;
+            }
+
+            if (normalizedSeries == "noseries" && hasSeries)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool ContainsIgnoreCase(string? source, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        return (source ?? string.Empty).Contains(value.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string DeriveSeriesFromGroupName(string? groupName)
+    {
+        if (string.IsNullOrWhiteSpace(groupName)) return "NO SERIES";
+        if (groupName.Contains("AJJR", StringComparison.OrdinalIgnoreCase)) return "AJJR";
+        if (groupName.Contains("LEUJ", StringComparison.OrdinalIgnoreCase)) return "LEUJ";
+        if (groupName.Contains("HM", StringComparison.OrdinalIgnoreCase)) return "HM";
+        if (groupName.Contains("LEJH", StringComparison.OrdinalIgnoreCase)) return "LEJH";
+        if (groupName.Contains("AJBR", StringComparison.OrdinalIgnoreCase)) return "AJBR";
+        return "NO SERIES";
+    }
+
+    private sealed record TimelineBookingRow(
+        int Id,
+        string? RefId,
+        string? SubResNo,
+        DateTime? StartDay,
+        int Duration,
+        string? Client,
+        string? ServiceName,
+        int? StatusXid,
+        int? CountryXid,
+        string? Holiday,
+        string? Country);
+
+    private sealed record GuideRow(int Id, string Name, string ExactCode);
+
+    private sealed record GuideRelationRow(
+        string BookingId,
+        int GuideId,
+        string? SendSMS,
+        string? Message,
+        DateTime? SendSMSDate)
+    {
+        public bool IsConfirmed => TimelineRepository.IsConfirmed(SendSMS);
+        public DateOnly? MessageDate => SendSMSDate is null ? null : DateOnly.FromDateTime(SendSMSDate.Value);
+    }
+
+    private sealed record BusyDateRow(int Pid, int GuideId, DateTime Date, string? Busy);
 
     private sealed record GuideRelation(
         string BookingId,
