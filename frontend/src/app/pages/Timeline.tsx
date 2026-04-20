@@ -890,7 +890,7 @@ export function Timeline() {
 
   const dailyColumns = useMemo(() => {
     if (!activeAssignmentBooking) return [];
-    const sourceDays = activeAssignmentBooking.managerDays?.length
+    const sourceDays = activeAssignmentBooking.managerDays !== undefined
       ? activeAssignmentBooking.managerDays
       : (() => {
           const days = [];

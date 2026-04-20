@@ -46,12 +46,12 @@ public sealed class BookingsRepository(
 
     public async Task<BookingManagerDataDto> GetBookingManagerAsync(string bookingRef, CancellationToken cancellationToken)
     {
-        if (!int.TryParse(bookingRef, out var resXid))
+        if (string.IsNullOrWhiteSpace(bookingRef))
         {
             return new BookingManagerDataDto();
         }
 
-        var rows = await GetBookingManagerRowsAsync(resXid, cancellationToken);
+        var rows = await GetBookingManagerRowsAsync(bookingRef.Trim(), cancellationToken);
         if (rows.Count == 0)
         {
             return new BookingManagerDataDto();
@@ -65,19 +65,28 @@ public sealed class BookingsRepository(
 
         var bookingId = bookingRow.BookingId.ToString();
         var startDay = DateOnly.FromDateTime(bookingRow.StartDay.Value);
-        var duration = Math.Max(1, bookingRow.Duration);
-        var days = new List<BookingManagerDayDto>(duration);
+
+        // 1. Gom nhóm dịch vụ theo ngày (ArrDate của Res_Holiday) trước
+        var serviceDays = rows
+            .Where(row => row.ServicePid.HasValue && row.ServiceDate.HasValue)
+            .GroupBy(row => DateOnly.FromDateTime(row.ServiceDate!.Value))
+            .OrderBy(group => group.Key)
+            .ToList(); // Ép sang List để dùng thuộc tính Count
+
+        // 2. Khởi tạo danh sách days mà không cần biến duration cứng (dùng luôn Count của serviceDays)
+        var days = new List<BookingManagerDayDto>(serviceDays.Count);
         var managerItemIds = new List<string>();
 
-        for (var day = 1; day <= duration; day += 1)
+        foreach (var serviceDay in serviceDays)
         {
-            var currentDate = startDay.AddDays(day - 1);
-            var items = rows
-                .Where(row => row.ServiceDate.HasValue && DateOnly.FromDateTime(row.ServiceDate.Value) == currentDate)
+            // Tính DayNum tự động dựa vào khoảng cách giữa ngày chạy dịch vụ và ngày bắt đầu tour
+            var dayNum = Math.Max(1, serviceDay.Key.DayNumber - startDay.DayNumber + 1);
+
+            var items = serviceDay
                 .Select(row => new BookingManagerItemDto
                 {
-                    Id = $"{bookingId}-d{day}-svc{row.ServicePid}",
-                    Type = BuildManagerServiceLabel(row.ServiceName, row.Holiday)
+                    Id = $"{bookingId}-d{dayNum}-svc{row.ServicePid}",
+                    Type = BuildManagerServiceLabel(row.ServiceName)
                 })
                 .DistinctBy(item => item.Id)
                 .ToArray();
@@ -85,8 +94,8 @@ public sealed class BookingsRepository(
             managerItemIds.AddRange(items.Select(item => item.Id));
             days.Add(new BookingManagerDayDto
             {
-                DayNum = day,
-                Date = currentDate,
+                DayNum = dayNum,
+                Date = serviceDay.Key,
                 Items = items
             });
         }
@@ -293,7 +302,7 @@ public sealed class BookingsRepository(
     {
         const string sql = @"SELECT
     CAST(packageRh.Pid AS varchar(20)) AS Id,
-    CAST(res.Pid AS nvarchar(50)) AS Ref,
+    CAST(res.ResNo AS nvarchar(50)) AS Ref,
     c.Code AS Client,
     res.PartyName AS GroupName,
     res.ArrDate AS StartDay, 
@@ -352,7 +361,7 @@ ORDER BY res.ArrDate, res.Pid;";
         {
             Id = row.Id,
             Series = string.IsNullOrWhiteSpace(row.Series) ? "NO SERIES" : row.Series.Trim(),
-            Ref = string.IsNullOrWhiteSpace(row.Ref) ? row.Id : row.Ref,
+            Ref = string.IsNullOrWhiteSpace(row.Ref) ? $"BOOKING-{row.Id}" : row.Ref,
             StartDay = row.StartDay is null ? null : DateOnly.FromDateTime(row.StartDay.Value),
             Duration = Math.Max(1, row.Duration),
             Client = row.Client ?? string.Empty,
@@ -381,39 +390,32 @@ ORDER BY res.ArrDate, res.Pid;";
         return rows.ToArray();
     }
 
-    private async Task<IReadOnlyList<BookingManagerRow>> GetBookingManagerRowsAsync(int resXid, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<BookingManagerRow>> GetBookingManagerRowsAsync(string resNo, CancellationToken cancellationToken)
     {
-        const string sql = """
+        const string sql = @"
             SELECT
-                packageRh.Pid AS BookingId,
-                res.ArrDate AS StartDay,
-                CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END AS Duration,
+                res.Pid AS BookingId, -- Thay packageRh.Pid bằng res.Pid
+                res.ArrDate AS StartDay,    
                 rh.Pid AS ServicePid,
                 rh.ArrDate AS ServiceDate,
-                CAST(ISNULL(rh.ServiceName, '') AS nvarchar(255)) AS ServiceName,
+                CAST(ISNULL(ms.service, '') AS nvarchar(255)) AS ServiceName, -- Lấy từ bảng M_Service
                 CAST(ISNULL(rh.Holiday, '') AS nvarchar(255)) AS Holiday
             FROM dbo.Res res
-            CROSS APPLY (
-                SELECT TOP (1)
-                    pkg.Pid
-                FROM dbo.Res_Holidays pkg
-                WHERE pkg.ResXid = res.Pid
-                  AND pkg.StatusXid != 9
-                ORDER BY pkg.NoOfNights DESC, pkg.Pid DESC
-            ) packageRh
             LEFT JOIN dbo.Res_Holidays rh
                 ON rh.ResXid = res.Pid
                AND rh.StatusXid != 9
                AND rh.ArrDate IS NOT NULL
-            WHERE res.Pid = @ResXid;
-            """;
+               AND rh.ServiceTypeXid = 123
+            LEFT JOIN dbo.M_Services ms 
+                ON ms.Pid = rh.ServiceXid -- JOIN thêm bảng M_Service
+            WHERE CAST(res.ResNo AS nvarchar(50)) = @ResNo;";
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
         var rows = await connection.QueryAsync<BookingManagerRow>(
             new CommandDefinition(
                 sql,
-                new { ResXid = resXid },
+                new { ResNo = resNo },
                 cancellationToken: cancellationToken));
         return rows.ToArray();
     }
@@ -778,16 +780,21 @@ ORDER BY res.ArrDate, res.Pid;";
         return normalized is "Y" or "1" or "T";
     }
 
-    private static string BuildManagerServiceLabel(string? serviceName, string? holiday)
+    private static string BuildManagerServiceLabel(string? serviceName)
     {
-        var normalizedServiceName = (serviceName ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(normalizedServiceName))
+        if (string.IsNullOrWhiteSpace(serviceName)) return string.Empty;
+
+        // Tách mảng và dọn dẹp khoảng trắng thừa
+        var segments = serviceName.Split('\\', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        // Bỏ 2 phần tử đầu tiên và ghép các phần tử còn lại bằng dấu " \ "
+        if (segments.Length > 2)
         {
-            return normalizedServiceName;
+            return string.Join(" \\ ", segments.Skip(2));
         }
 
-        var normalizedHoliday = (holiday ?? string.Empty).Trim();
-        return !string.IsNullOrWhiteSpace(normalizedHoliday) ? normalizedHoliday : "Service";
+        // Trả về chuỗi gốc (đã làm sạch) nếu chuỗi ban đầu có 2 phần tử trở xuống
+        return string.Join(" \\ ", segments);
     }
 
     private static (DateOnly Start, DateOnly End) NormalizeRange(DateOnly? from, DateOnly? to)
@@ -831,7 +838,6 @@ ORDER BY res.ArrDate, res.Pid;";
     private sealed record BookingManagerRow(
         int BookingId,
         DateTime? StartDay,
-        int Duration,
         int? ServicePid,
         DateTime? ServiceDate,
         string? ServiceName,

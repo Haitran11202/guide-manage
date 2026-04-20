@@ -174,10 +174,10 @@ export function TimelineBookingAssignmentModal({
               <ChevronLeft className="w-4 h-4" /> Back
             </button>
 
-            <div className="min-w-0 border border-[#C4E8FF] rounded-2xl px-4 py-2 bg-[#C4E8FF]/10">
-              <div className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/55">Booking</div>
-              <div className="text-xs font-black text-[#1D3663] truncate">{activeAssignmentBooking.ref}</div>
-              <div className="text-[10px] font-bold text-[#1D3663]/65 truncate">
+            <div className="min-w-0 border border-[#C4E8FF] rounded-2xl px-4 py-2 bg-[#C4E8FF]/10 flex items-center gap-3">
+              <div className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/55 shrink-0">Booking</div>
+              <div className="text-xs font-black text-[#1D3663] truncate shrink-0">{activeAssignmentBooking.ref}</div>
+              <div className="text-[10px] font-bold text-[#1D3663]/65 truncate min-w-0">
                 {activeAssignmentBooking.groupName} / {activeAssignmentBooking.client}
               </div>
             </div>
@@ -342,7 +342,7 @@ export function TimelineBookingAssignmentModal({
                       <div className="text-[11px] font-black uppercase tracking-widest text-[#1D3663]/55">
                         Day {day.dayNum}
                       </div>
-                      <div className="text-lg font-black text-[#1D3663] leading-tight">{day.dateStr}</div>
+                      <div className="text-md font-black text-[#1D3663] leading-tight">{day.dateStr}</div>
                     </div>
                     <button
                       onClick={() => onSelectDay(day.dayNum)}
@@ -361,7 +361,7 @@ export function TimelineBookingAssignmentModal({
 
                         <div className="flex items-start justify-between gap-3">
                           <div
-                            className={`text-base font-black ${
+                            className={`text-sm font-black ${
                               group.guideName === "Unassigned" ? "text-[#F3796A]" : "text-[#1D3663]"
                             }`}
                           >
@@ -390,7 +390,7 @@ export function TimelineBookingAssignmentModal({
                                   : "bg-transparent text-[#1D3663] hover:bg-[#C4E8FF]/15"
                                 }`}
                             >
-                              <div className="text-sm font-bold">{formatServiceName(item.type)}</div>
+                              <div className="text-sm">{item.type}</div>
                             </button>
                           );
                         })}
