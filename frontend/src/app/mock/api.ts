@@ -1,4 +1,5 @@
 import type {
+  BookingManagerData,
   CityOption,
   CountryOption,
   GuideDirectoryItem,
@@ -200,6 +201,19 @@ type ApiBookingsData = {
   itemTimeSlots: Record<string, string>;
   emailRecords: Record<string, ApiBookingsGuideEmailRecord>;
   guideTimeExceptions: ApiBookingsGuideTimeException[];
+};
+
+type ApiBookingManagerData = {
+  days: Array<{
+    dayNum: number;
+    date?: string | null;
+    items: Array<{
+      id: string;
+      type: string;
+    }>;
+  }>;
+  itemAssignments: Record<string, number>;
+  itemTimeSlots: Record<string, string>;
 };
 
 type TimelineQuery = {
@@ -498,6 +512,21 @@ const mapBookingsData = (data: ApiBookingsData): TimelineData => ({
   })),
 });
 
+const mapBookingManagerData = (data: ApiBookingManagerData): BookingManagerData => ({
+  days: (data.days ?? []).map((day) => ({
+    dayNum: day.dayNum,
+    dateStr: day.date ?? "",
+    items: (day.items ?? []).map((item) => ({
+      id: item.id,
+      type: item.type,
+    })),
+  })),
+  itemAssignments: data.itemAssignments ?? {},
+  itemTimeSlots: Object.fromEntries(
+    Object.entries(data.itemTimeSlots ?? {}).map(([itemId, slot]) => [itemId, ensureServiceDayPart(slot)]),
+  ),
+});
+
 export const mockApi = {
   async getGuides(): Promise<GuideDirectoryItem[]> {
     return request<ApiGuideDirectoryItem[]>("/api/guides");
@@ -635,6 +664,11 @@ export const mockApi = {
     const suffix = searchParams.size > 0 ? `?${searchParams.toString()}` : "";
     const bookings = await request<ApiBookingsData>(`/api/bookings${suffix}`);
     return mapBookingsData(bookings);
+  },
+
+  async getBookingManagerData(bookingRef: string): Promise<BookingManagerData> {
+    const data = await request<ApiBookingManagerData>(`/api/bookings/${encodeURIComponent(bookingRef)}/manager`);
+    return mapBookingManagerData(data);
   },
 
   async setBookingGuideConfirmation(bookingId: string, guideName: string, confirmed: boolean): Promise<TimelineData> {

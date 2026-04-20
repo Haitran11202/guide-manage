@@ -44,6 +44,66 @@ public sealed class BookingsRepository(
             seriesTake);
     }
 
+    public async Task<BookingManagerDataDto> GetBookingManagerAsync(string bookingRef, CancellationToken cancellationToken)
+    {
+        if (!int.TryParse(bookingRef, out var resXid))
+        {
+            return new BookingManagerDataDto();
+        }
+
+        var rows = await GetBookingManagerRowsAsync(resXid, cancellationToken);
+        if (rows.Count == 0)
+        {
+            return new BookingManagerDataDto();
+        }
+
+        var bookingRow = rows[0];
+        if (!bookingRow.StartDay.HasValue)
+        {
+            return new BookingManagerDataDto();
+        }
+
+        var bookingId = bookingRow.BookingId.ToString();
+        var startDay = DateOnly.FromDateTime(bookingRow.StartDay.Value);
+        var duration = Math.Max(1, bookingRow.Duration);
+        var days = new List<BookingManagerDayDto>(duration);
+        var managerItemIds = new List<string>();
+
+        for (var day = 1; day <= duration; day += 1)
+        {
+            var currentDate = startDay.AddDays(day - 1);
+            var items = rows
+                .Where(row => row.ServiceDate.HasValue && DateOnly.FromDateTime(row.ServiceDate.Value) == currentDate)
+                .Select(row => new BookingManagerItemDto
+                {
+                    Id = $"{bookingId}-d{day}-svc{row.ServicePid}",
+                    Type = BuildManagerServiceLabel(row.ServiceName, row.Holiday)
+                })
+                .DistinctBy(item => item.Id)
+                .ToArray();
+
+            managerItemIds.AddRange(items.Select(item => item.Id));
+            days.Add(new BookingManagerDayDto
+            {
+                DayNum = day,
+                Date = currentDate,
+                Items = items
+            });
+        }
+
+        var assignedGuideIds = await GetGuideIdsForBookingAsync(bookingRow.BookingId, cancellationToken);
+        var itemAssignments = BuildManagerItemAssignments(managerItemIds, assignedGuideIds);
+        ApplyManagerItemAssignmentOverrides(itemAssignments, managerItemIds);
+        var itemTimeSlots = BuildManagerItemTimeSlots(managerItemIds);
+
+        return new BookingManagerDataDto
+        {
+            Days = days,
+            ItemAssignments = itemAssignments,
+            ItemTimeSlots = itemTimeSlots
+        };
+    }
+
     private BookingsDataDto BuildBookingsData(
         IReadOnlyList<BookingsBookingDto> bookings,
         IReadOnlyList<GuideRow> guideRows,
@@ -122,7 +182,6 @@ public sealed class BookingsRepository(
                     Duration = booking.Duration,
                     Client = booking.Client,
                     GroupName = booking.GroupName,
-                    TourName = booking.TourName,
                     Status = booking.Status,
                     Country = booking.Country,
                     AssignedGuides = assignedGuideIds
@@ -232,43 +291,50 @@ public sealed class BookingsRepository(
         DateOnly rangeEnd,
         CancellationToken cancellationToken)
     {
-        const string sql = """
-            SELECT
-                CAST(packageRh.Pid AS varchar(20)) AS Id,
-                CAST(res.ResNo AS nvarchar(50)) AS Ref,
-                c.Code AS Client,
-                res.PartyName AS GroupName,
-                packageRh.ArrDate AS StartDay,
-                CASE WHEN ISNULL(packageRh.NoOfNights, 1) < 1 THEN 1 ELSE packageRh.NoOfNights END AS Duration,
-                COALESCE(NULLIF(packageRh.ServiceName, ''), packageRh.Holiday, '') AS TourName,
-                packageRh.StatusXid,
-                packageRh.CountryXid,
-                mc.Country,
-                COALESCE(NULLIF(mh.Code, ''), 'NO SERIES') AS Series
-            FROM dbo.Res res
-            CROSS APPLY (
-                SELECT TOP (1)
-                    rh.Pid,
-                    rh.ArrDate,
-                    rh.NoOfNights,
-                    rh.ServiceName,
-                    rh.StatusXid,
-                    rh.CountryXid,
-                    rh.Holiday,
-                    rh.HolidayXid
-                FROM dbo.Res_Holidays rh
-                WHERE rh.ResXid = res.Pid
-                  AND rh.StatusXid != 9
-                  AND rh.ArrDate IS NOT NULL
-                  AND rh.ArrDate <= @RangeEnd
-                  AND DATEADD(day, CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END, rh.ArrDate) >= @RangeStart
-                ORDER BY rh.NoOfNights DESC, rh.Pid DESC
-            ) packageRh
-            LEFT JOIN dbo.M_Country mc ON mc.Pid = packageRh.CountryXid
-            LEFT JOIN dbo.M_Holidays mh ON mh.Pid = packageRh.HolidayXid
-            INNER JOIN M_Client c on c.Pid = Res.ClientXid
-            ORDER BY packageRh.ArrDate, packageRh.Pid;
-            """;
+        const string sql = @"SELECT
+    CAST(packageRh.Pid AS varchar(20)) AS Id,
+    CAST(res.Pid AS nvarchar(50)) AS Ref,
+    c.Code AS Client,
+    res.PartyName AS GroupName,
+    res.ArrDate AS StartDay, 
+    CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END AS Duration, 
+    res.Status, 
+    CountryData.Countries AS Country, 
+    COALESCE(NULLIF(mh.Code, ''), 'NO SERIES') AS Series
+FROM dbo.Res res
+INNER JOIN dbo.M_Client c ON c.Pid = res.ClientXid
+
+-- 1. Ghép chuỗi Quốc gia từ Res_Holidays
+OUTER APPLY (
+    SELECT STUFF((
+        SELECT DISTINCT ', ' + mc.Country
+        FROM dbo.Res_Holidays rh_c
+        INNER JOIN dbo.M_Country mc ON mc.Pid = rh_c.CountryXid
+        WHERE rh_c.ResXid = res.Pid 
+          AND rh_c.StatusXid != 9
+        FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''
+    ) AS Countries
+) AS CountryData
+
+-- 2. Lấy Id và Series từ gói Holiday chính (Đã lược bỏ ServiceName, Holiday)
+CROSS APPLY (
+    SELECT TOP (1)
+        rh.Pid,
+        rh.HolidayXid
+    FROM dbo.Res_Holidays rh
+    WHERE rh.ResXid = res.Pid
+      AND rh.StatusXid != 9
+    ORDER BY rh.NoOfNights DESC, rh.Pid DESC
+) packageRh
+
+LEFT JOIN dbo.M_Holidays mh ON mh.Pid = packageRh.HolidayXid
+
+-- 3. Bộ lọc ngày tháng dựa trên dữ liệu bảng Res
+WHERE res.ArrDate IS NOT NULL
+  AND res.ArrDate <= @RangeEnd
+  AND DATEADD(day, CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END, res.ArrDate) >= @RangeStart
+
+ORDER BY res.ArrDate, res.Pid;";
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
@@ -286,16 +352,13 @@ public sealed class BookingsRepository(
         {
             Id = row.Id,
             Series = string.IsNullOrWhiteSpace(row.Series) ? "NO SERIES" : row.Series.Trim(),
-            Ref = string.IsNullOrWhiteSpace(row.Ref) ? $"BOOKING-{row.Id}" : row.Ref,
+            Ref = string.IsNullOrWhiteSpace(row.Ref) ? row.Id : row.Ref,
             StartDay = row.StartDay is null ? null : DateOnly.FromDateTime(row.StartDay.Value),
             Duration = Math.Max(1, row.Duration),
             Client = row.Client ?? string.Empty,
             GroupName = row.GroupName ?? string.Empty,
-            TourName = row.TourName ?? string.Empty,
-            Status = MapBookingStatus(row.StatusXid),
-            Country = !string.IsNullOrWhiteSpace(row.Country)
-                ? row.Country
-                : row.CountryXid.HasValue ? $"Country {row.CountryXid.Value}" : string.Empty,
+            Status = row.Status ?? string.Empty,
+            Country = row.Country ?? string.Empty,
             AssignedGuides = [],
             ConfirmedGuides = []
         }).ToArray();
@@ -315,6 +378,43 @@ public sealed class BookingsRepository(
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
         var rows = await connection.QueryAsync<GuideRow>(new CommandDefinition(sql, cancellationToken: cancellationToken));
+        return rows.ToArray();
+    }
+
+    private async Task<IReadOnlyList<BookingManagerRow>> GetBookingManagerRowsAsync(int resXid, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                packageRh.Pid AS BookingId,
+                res.ArrDate AS StartDay,
+                CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END AS Duration,
+                rh.Pid AS ServicePid,
+                rh.ArrDate AS ServiceDate,
+                CAST(ISNULL(rh.ServiceName, '') AS nvarchar(255)) AS ServiceName,
+                CAST(ISNULL(rh.Holiday, '') AS nvarchar(255)) AS Holiday
+            FROM dbo.Res res
+            CROSS APPLY (
+                SELECT TOP (1)
+                    pkg.Pid
+                FROM dbo.Res_Holidays pkg
+                WHERE pkg.ResXid = res.Pid
+                  AND pkg.StatusXid != 9
+                ORDER BY pkg.NoOfNights DESC, pkg.Pid DESC
+            ) packageRh
+            LEFT JOIN dbo.Res_Holidays rh
+                ON rh.ResXid = res.Pid
+               AND rh.StatusXid != 9
+               AND rh.ArrDate IS NOT NULL
+            WHERE res.Pid = @ResXid;
+            """;
+
+        await using var connection = connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        var rows = await connection.QueryAsync<BookingManagerRow>(
+            new CommandDefinition(
+                sql,
+                new { ResXid = resXid },
+                cancellationToken: cancellationToken));
         return rows.ToArray();
     }
 
@@ -385,6 +485,38 @@ public sealed class BookingsRepository(
         return rows.ToArray();
     }
 
+    private async Task<IReadOnlyList<int>> GetGuideIdsForBookingAsync(int bookingPid, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT DISTINCT GuideId
+            FROM
+            (
+                SELECT rh.GuideXid AS GuideId
+                FROM dbo.Res_Holidays rh
+                WHERE rh.Pid = @BookingPid
+                  AND rh.GuideXid IS NOT NULL
+
+                UNION ALL
+
+                SELECT hg.SupplierGuideXid AS GuideId
+                FROM dbo.Res_HolidayGuide hg
+                WHERE hg.ResHolidayXid = @BookingPid
+                  AND hg.SupplierGuideXid IS NOT NULL
+            ) source
+            WHERE GuideId IS NOT NULL
+            ORDER BY GuideId;
+            """;
+
+        await using var connection = connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        var rows = await connection.QueryAsync<int>(
+            new CommandDefinition(
+                sql,
+                new { BookingPid = bookingPid },
+                cancellationToken: cancellationToken));
+        return rows.ToArray();
+    }
+
     private async Task<IReadOnlyList<BusyDateRow>> GetBusyDateRowsAsync(CancellationToken cancellationToken)
     {
         const string sql = """
@@ -434,10 +566,49 @@ public sealed class BookingsRepository(
         return result;
     }
 
+    private static Dictionary<string, int> BuildManagerItemAssignments(
+        IReadOnlyList<string> itemIds,
+        IReadOnlyList<int> guideIds)
+    {
+        var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (itemIds.Count == 0 || guideIds.Count == 0)
+        {
+            return result;
+        }
+
+        var orderedGuideIds = guideIds.OrderBy(value => value).ToArray();
+        for (var index = 0; index < itemIds.Count; index += 1)
+        {
+            result[itemIds[index]] = orderedGuideIds[index % orderedGuideIds.Length];
+        }
+
+        return result;
+    }
+
     private void ApplyItemAssignmentOverrides(IDictionary<string, int> itemAssignments)
     {
         foreach (var overrideEntry in bookingManagementState.ItemAssignmentOverrides)
         {
+            if (overrideEntry.Value <= 0)
+            {
+                itemAssignments.Remove(overrideEntry.Key);
+                continue;
+            }
+
+            itemAssignments[overrideEntry.Key] = overrideEntry.Value;
+        }
+    }
+
+    private void ApplyManagerItemAssignmentOverrides(IDictionary<string, int> itemAssignments, IReadOnlyCollection<string> managerItemIds)
+    {
+        var itemIdSet = managerItemIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var overrideEntry in bookingManagementState.ItemAssignmentOverrides)
+        {
+            if (!itemIdSet.Contains(overrideEntry.Key))
+            {
+                continue;
+            }
+
             if (overrideEntry.Value <= 0)
             {
                 itemAssignments.Remove(overrideEntry.Key);
@@ -459,6 +630,20 @@ public sealed class BookingsRepository(
         foreach (var overrideEntry in bookingManagementState.ItemTimeSlotOverrides)
         {
             result[overrideEntry.Key] = overrideEntry.Value;
+        }
+
+        return result;
+    }
+
+    private IReadOnlyDictionary<string, string> BuildManagerItemTimeSlots(IReadOnlyCollection<string> itemIds)
+    {
+        var result = itemIds.ToDictionary(itemId => itemId, _ => "full-day", StringComparer.OrdinalIgnoreCase);
+        foreach (var overrideEntry in bookingManagementState.ItemTimeSlotOverrides)
+        {
+            if (result.ContainsKey(overrideEntry.Key))
+            {
+                result[overrideEntry.Key] = overrideEntry.Value;
+            }
         }
 
         return result;
@@ -593,6 +778,18 @@ public sealed class BookingsRepository(
         return normalized is "Y" or "1" or "T";
     }
 
+    private static string BuildManagerServiceLabel(string? serviceName, string? holiday)
+    {
+        var normalizedServiceName = (serviceName ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(normalizedServiceName))
+        {
+            return normalizedServiceName;
+        }
+
+        var normalizedHoliday = (holiday ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(normalizedHoliday) ? normalizedHoliday : "Service";
+    }
+
     private static (DateOnly Start, DateOnly End) NormalizeRange(DateOnly? from, DateOnly? to)
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -614,9 +811,7 @@ public sealed class BookingsRepository(
         string GroupName,
         DateTime? StartDay,
         int Duration,
-        string TourName,
-        int? StatusXid,
-        int? CountryXid,
+        string Status,
         string? Country,
         string Series);
 
@@ -632,6 +827,15 @@ public sealed class BookingsRepository(
         public bool IsConfirmed => BookingsRepository.IsConfirmed(SendSMS);
         public DateOnly? MessageDate => SendSMSDate is null ? null : DateOnly.FromDateTime(SendSMSDate.Value);
     }
+
+    private sealed record BookingManagerRow(
+        int BookingId,
+        DateTime? StartDay,
+        int Duration,
+        int? ServicePid,
+        DateTime? ServiceDate,
+        string? ServiceName,
+        string? Holiday);
 
     private sealed record BusyDateRow(int Pid, int GuideId, DateTime Date, string Busy);
 }

@@ -25,7 +25,7 @@ import { buildGuideEmailKey, mockApi } from "../mock/api";
 import { TimelineBookingAssignmentModal } from "../components/timeline/TimelineBookingAssignmentModal";
 import { TimelineBookingsTab } from "../components/timeline/TimelineBookingsTab";
 import { LoadingOverlay } from "../components/ui/LoadingOverlay";
-import type { CountryOption, GuideEmailRecord, GuideTimeException, ServiceDayPart, TimelineBookingSeries } from "../mock/types";
+import type { BookingManagerDay, CountryOption, GuideEmailRecord, GuideTimeException, ServiceDayPart, TimelineBookingSeries } from "../mock/types";
 
 type Booking = {
   id: string;
@@ -40,6 +40,7 @@ type Booking = {
   assignedGuides: string[];
   confirmedGuides: string[];
   country?: string;
+  managerDays?: BookingManagerDay[];
 };
 
 type BusyDate = {
@@ -309,6 +310,14 @@ export function Timeline() {
     applyTimelineSupportData(data);
   };
 
+  const mergeBookingManagerSupportData = (data: {
+    itemAssignments: Record<string, number>;
+    itemTimeSlots: Record<string, ServiceDayPart>;
+  }) => {
+    setItemAssignments((current) => ({ ...current, ...data.itemAssignments }));
+    setItemTimeSlots((current) => ({ ...current, ...data.itemTimeSlots }));
+  };
+
   const [pendingGuideStatusChange, setPendingGuideStatusChange] = useState<PendingGuideStatusChange>(null);
   const [emailComposerState, setEmailComposerState] = useState<EmailComposerState>(null);
 
@@ -341,6 +350,7 @@ export function Timeline() {
       if (activeTab === "bookings") {
         return {
           ...updatedBooking,
+          managerDays: currentBooking.managerDays,
           series: currentBooking.series,
           ref: currentBooking.ref,
           client: currentBooking.client,
@@ -880,27 +890,38 @@ export function Timeline() {
 
   const dailyColumns = useMemo(() => {
     if (!activeAssignmentBooking) return [];
-    const days = [];
-    let current = new Date(`${activeAssignmentBooking.startDay}T00:00:00`);
-    for (let i = 0; i < activeAssignmentBooking.duration; i++) {
-      const dateStr = current.toISOString().split("T")[0];
-      const dayNum = i + 1;
-      const bId = activeAssignmentBooking.id;
+    const sourceDays = activeAssignmentBooking.managerDays?.length
+      ? activeAssignmentBooking.managerDays
+      : (() => {
+          const days = [];
+          let current = new Date(`${activeAssignmentBooking.startDay}T00:00:00`);
+          for (let i = 0; i < activeAssignmentBooking.duration; i++) {
+            const dateStr = current.toISOString().split("T")[0];
+            const dayNum = i + 1;
+            const bId = activeAssignmentBooking.id;
 
-      const items = [
-        { id: `${bId}-d${dayNum}-hd`, type: "TYO\HD Guide" },
-        { id: `${bId}-d${dayNum}-lunch`, type: "TYO\Lunch for Guide in a local restaurant near the city's river" }
-      ];
+            const items = [
+              { id: `${bId}-d${dayNum}-hd`, type: "TYO\\HD Guide" },
+              { id: `${bId}-d${dayNum}-lunch`, type: "TYO\\Lunch for Guide in a local restaurant near the city's river" },
+            ];
 
-      if (i !== activeAssignmentBooking.duration - 1) {
-        items.push({ id: `${bId}-d${dayNum}-dinner`, type: "TYO\\Dinner for Guide" });
-      }
+            if (i !== activeAssignmentBooking.duration - 1) {
+              items.push({ id: `${bId}-d${dayNum}-dinner`, type: "TYO\\Dinner for Guide" });
+            }
 
-      if (i === 0 || i === activeAssignmentBooking.duration - 1) {
-        items.push({ id: `${bId}-d${dayNum}-trf`, type: "TYOAirport Transfer Guide" });
-      }
+            if (i === 0 || i === activeAssignmentBooking.duration - 1) {
+              items.push({ id: `${bId}-d${dayNum}-trf`, type: "TYOAirport Transfer Guide" });
+            }
 
-      const enrichedItems = items.map((item) => {
+            days.push({ dayNum, dateStr, items });
+            current.setDate(current.getDate() + 1);
+          }
+
+          return days;
+        })();
+
+    return sourceDays.map((day) => {
+      const enrichedItems = day.items.map((item) => {
         const assignedGuideId = itemAssignments[item.id];
         const assignedGuideName = assignedGuideId ? guidesData.find((g) => g.id === assignedGuideId)?.name : null;
         const slot = itemTimeSlots[item.id] ?? "full-day";
@@ -908,10 +929,8 @@ export function Timeline() {
       });
       const firstGuide = enrichedItems[0]?.assignedGuideName;
       const isAllSameGuide = enrichedItems.length > 0 && firstGuide && enrichedItems.every((item) => item.assignedGuideName === firstGuide);
-      days.push({ dayNum, dateStr, items: enrichedItems, isAllSameGuide, dayGuideName: isAllSameGuide ? firstGuide : null });
-      current.setDate(current.getDate() + 1);
-    }
-    return days;
+      return { ...day, items: enrichedItems, isAllSameGuide, dayGuideName: isAllSameGuide ? firstGuide : null };
+    });
   }, [activeAssignmentBooking, itemAssignments, itemTimeSlots, guidesData]);
 
   const handleItemMouseDown = (itemId: string) => {
@@ -1177,7 +1196,18 @@ export function Timeline() {
     if (bookingManagerRequestRef.current !== requestId) {
       return;
     }
-    setActiveAssignmentBooking(latestBooking);
+    const bookingManagerData = await runTimelineApi("Loading booking services...", () =>
+      mockApi.getBookingManagerData(latestBooking.ref),
+    false,
+    );
+    if (bookingManagerRequestRef.current !== requestId) {
+      return;
+    }
+    mergeBookingManagerSupportData(bookingManagerData);
+    setActiveAssignmentBooking({
+      ...latestBooking,
+      managerDays: bookingManagerData.days,
+    });
     setBookingManagerDirty(false);
     setSelectedItemsToAssign(new Set());
     setShowGuideSelector(false);

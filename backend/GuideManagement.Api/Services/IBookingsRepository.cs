@@ -16,4 +16,6 @@ public interface IBookingsRepository
         int? seriesSkip,
         int? seriesTake,
         CancellationToken cancellationToken);
+
+    Task<BookingManagerDataDto> GetBookingManagerAsync(string bookingRef, CancellationToken cancellationToken);
 }

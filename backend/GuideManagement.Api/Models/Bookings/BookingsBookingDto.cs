@@ -9,7 +9,6 @@ public sealed class BookingsBookingDto
     public int Duration { get; init; }
     public string Client { get; init; } = string.Empty;
     public string GroupName { get; init; } = string.Empty;
-    public string TourName { get; init; } = string.Empty;
     public string Status { get; init; } = string.Empty;
     public string? Country { get; init; }
     public IReadOnlyList<string> AssignedGuides { get; init; } = [];

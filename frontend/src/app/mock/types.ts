@@ -201,6 +201,23 @@ export type TimelineBookingSeries = {
   confirmed: number;
 };
 
+export type BookingManagerItem = {
+  id: string;
+  type: string;
+};
+
+export type BookingManagerDay = {
+  dayNum: number;
+  dateStr: string;
+  items: BookingManagerItem[];
+};
+
+export type BookingManagerData = {
+  days: BookingManagerDay[];
+  itemAssignments: Record<string, number>;
+  itemTimeSlots: Record<string, ServiceDayPart>;
+};
+
 export type TimelineData = {
   bookingsData: TimelineBooking[];
   bookingSeries: TimelineBookingSeries[];

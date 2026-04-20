@@ -107,6 +107,11 @@ export function TimelineBookingsTab({
     }
   };
 
+  const onManageBookingV2 = (booking: TimelineBooking) => {
+    
+  }
+
+
   return (
     <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#C4E8FF]/10">
       <div className="px-6 py-4 border-b border-[#C4E8FF] bg-white shrink-0 flex items-center gap-3 flex-wrap shadow-sm z-10 relative">

@@ -36,4 +36,13 @@ public sealed class BookingsController(IBookingsRepository bookingsRepository) :
             cancellationToken);
         return Ok(bookings);
     }
+
+    [HttpGet("{bookingRef}/manager")]
+    public async Task<ActionResult<BookingManagerDataDto>> GetBookingManager(
+        string bookingRef,
+        CancellationToken cancellationToken)
+    {
+        var data = await bookingsRepository.GetBookingManagerAsync(bookingRef, cancellationToken);
+        return Ok(data);
+    }
 }
