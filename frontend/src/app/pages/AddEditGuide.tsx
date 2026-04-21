@@ -3,9 +3,6 @@ import { useParams, useNavigate, Link } from "react-router";
 import {
   User,
   Briefcase,
-  Camera,
-  UploadCloud,
-  FileCheck,
   Globe,
   FileText,
   X,
@@ -32,22 +29,25 @@ export function AddEditGuide() {
     email: "",
     phone: "",
     dateOfBirth: "",
+    address: "",
     city: "",
+    country: "",
+    partTime: true,
     licenseName: "",
     startDateWithUs: "",
     tourRecord: "",
+    notes: "",
     whtType: "Resident",
     whtTax: getWhtTaxByType("Resident"),
     status: "Active",
-    tags: [],
+    appearance: "",
     languages: [{ language: "English", proficiency: "Intermediate" }],
     biography: "",
   });
-  const [tagOptions, setTagOptions] = useState<string[]>([]);
-  const [newTagValue, setNewTagValue] = useState("");
+  const [tagInput, setTagInput] = useState("");
   const [cityOptions, setCityOptions] = useState<{ city: string; country: string }[]>([]);
+  const [countryOptions, setCountryOptions] = useState<{ xid: number; name: string }[]>([]);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
-  const [isTagLoading, setIsTagLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -55,16 +55,16 @@ export function AddEditGuide() {
 
     void (async () => {
       try {
-        const [guideFormData, nextTagOptions, nextCityOptions] = await Promise.all([
+        const [guideFormData, nextCityOptions, nextCountryOptions] = await Promise.all([
           mockApi.getGuideFormData(guideId),
-          mockApi.getGuideClientTags(),
           mockApi.getCityOptions(),
+          mockApi.getCountryOptions(),
         ]);
 
         if (!active) return;
         setFormData(guideFormData);
-        setTagOptions(nextTagOptions);
         setCityOptions(nextCityOptions);
+        setCountryOptions(nextCountryOptions);
       } finally {
         if (active) {
           setIsInitialLoading(false);
@@ -82,12 +82,35 @@ export function AddEditGuide() {
     [cityOptions, formData.city],
   );
 
-  const toggleTag = (tag: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      tags: prev.tags.includes(tag) ? prev.tags.filter((item) => item !== tag) : [...prev.tags, tag],
-    }));
-  };
+  const visibleCountryOptions = useMemo(() => {
+    if (!selectedCity?.country) {
+      return countryOptions;
+    }
+
+    return countryOptions.filter((option) => option.name === selectedCity.country);
+  }, [countryOptions, selectedCity]);
+
+  useEffect(() => {
+    if (!selectedCity) {
+      return;
+    }
+
+    if (formData.country !== selectedCity.country) {
+      setFormData((prev) => ({
+        ...prev,
+        country: selectedCity.country,
+      }));
+    }
+  }, [selectedCity, formData.country]);
+
+  const appearanceTags = useMemo(
+    () =>
+      formData.appearance
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value, index, items) => value.length > 0 && items.findIndex((item) => item.toLowerCase() === value.toLowerCase()) === index),
+    [formData.appearance],
+  );
 
   const addLanguage = () => {
     setFormData((prev) => ({
@@ -127,24 +150,42 @@ export function AddEditGuide() {
     }));
   };
 
-  const handleCreateTag = async () => {
-    const normalizedTag = newTagValue.trim().toUpperCase();
-    if (!normalizedTag) {
+  const handleCityChange = (value: string) => {
+    const matchedCity = cityOptions.find((option) => option.city === value) ?? null;
+    setFormData((prev) => ({
+      ...prev,
+      city: value,
+      country: matchedCity?.country ?? prev.country,
+    }));
+  };
+
+  const updateAppearanceTags = (tags: string[]) => {
+    updateField("appearance", tags.join(", "));
+  };
+
+  const handleAddTags = () => {
+    const nextTags = tagInput
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    if (nextTags.length === 0) {
       return;
     }
 
-    setIsTagLoading(true);
-    try {
-      const nextOptions = await mockApi.createGuideClientTag(normalizedTag);
-      setTagOptions(nextOptions);
-      setFormData((prev) => ({
-        ...prev,
-        tags: prev.tags.includes(normalizedTag) ? prev.tags : [...prev.tags, normalizedTag],
-      }));
-      setNewTagValue("");
-    } finally {
-      setIsTagLoading(false);
-    }
+    const mergedTags = [...appearanceTags];
+    nextTags.forEach((tag) => {
+      if (!mergedTags.some((item) => item.toLowerCase() === tag.toLowerCase())) {
+        mergedTags.push(tag);
+      }
+    });
+
+    updateAppearanceTags(mergedTags);
+    setTagInput("");
+  };
+
+  const handleRemoveTag = (tagToRemove: string) => {
+    updateAppearanceTags(appearanceTags.filter((tag) => tag !== tagToRemove));
   };
 
   const handleSubmit = async () => {
@@ -213,13 +254,33 @@ export function AddEditGuide() {
         {(isInitialLoading || isSaving) && (
           <LoadingOverlay label={isSaving ? "Saving guide..." : "Loading guide form..."} />
         )}
-        <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 xl:grid-cols-12 gap-6 pb-20">
+        <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 items-stretch xl:grid-cols-12 gap-6 pb-20">
           <div className="xl:col-span-7 space-y-6">
             <section className="bg-white rounded-2xl p-6 shadow-sm border border-[#C4E8FF]">
               <h3 className="font-black text-[#1D3663] text-sm uppercase tracking-tight flex items-center gap-2 mb-6 border-b border-[#C4E8FF]/50 pb-3">
                 <User className="w-4 h-4 text-[#F3796A]" /> Basic Identity
               </h3>
               <div className="grid grid-cols-2 gap-x-5 gap-y-4">
+                <div className="col-span-2 flex justify-end">
+                  <div className="w-full max-w-[260px] bg-[#C4E8FF]/20 p-1.5 rounded-xl flex gap-1 h-fit my-auto border border-[#C4E8FF]">
+                    <button
+                      type="button"
+                      onClick={() => updateField("status", "Active")}
+                      className={`flex-1 py-1.5 text-[9px] font-black rounded-lg uppercase tracking-widest shadow-sm ${formData.status === "Active" ? "bg-[#1D3663] text-white" : "text-[#1D3663]/55"
+                        }`}
+                    >
+                      ACTIVE
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateField("status", "Inactive")}
+                      className={`flex-1 py-1.5 text-[9px] font-black rounded-lg uppercase tracking-widest ${formData.status === "Inactive" ? "bg-[#1D3663] text-white shadow-sm" : "text-[#1D3663]/55"
+                        }`}
+                    >
+                      INACTIVE
+                    </button>
+                  </div>
+                </div>
                 <div className="col-span-2">
                   <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
                     Full Name
@@ -266,25 +327,70 @@ export function AddEditGuide() {
                 </div>
                 <div>
                   <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
-                    City
+                    Address
                   </label>
                   <input
                     type="text"
                     list="guide-city-options"
-                    value={formData.city}
-                    onChange={(event) => updateField("city", event.target.value)}
-                    placeholder="Select a city from the DB"
+                    value={formData.address}
+                    onChange={(event) => updateField("address", event.target.value)}
+                    placeholder="Enter address"
                     className="w-full mt-1 px-4 py-2.5 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none"
                   />
-                  <datalist id="guide-city-options">
-                    {cityOptions.map((option) => (
-                      <option key={`${option.city}-${option.country}`} value={option.city} />
-                    ))}
-                  </datalist>
-                  <div className="mt-1.5 text-[10px] font-bold uppercase tracking-widest text-[#1D3663]/50">
-                    {selectedCity ? `Country: ${selectedCity.country}` : "City is linked to the backend catalog"}
-                  </div>
                 </div>
+
+                <div>
+                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                    City
+                  </label>
+                  <select
+                    value={formData.city}
+                    onChange={(event) => handleCityChange(event.target.value)}
+                    className="w-full mt-1 px-4 py-2.5 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none"
+                  >
+                    <option value="">Select city</option>
+                    {cityOptions.map((option) => (
+                      <option key={`${option.city}-${option.country}`} value={option.city}>
+                        {option.city}
+                      </option>
+                    ))}
+                  </select>
+                  
+                </div>
+
+                <div>
+                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                    Country
+                  </label>
+                  <select
+                    value={formData.country}
+                    onChange={(event) => updateField("country", event.target.value)}
+                    disabled={!!selectedCity}
+                    className="w-full mt-1 px-4 py-2.5 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none"
+                  >
+                    <option value="">Select country</option>
+                    {visibleCountryOptions.map((option) => (
+                      <option key={option.xid} value={option.name}>
+                        {option.name}
+                      </option>
+                    ))}
+                  </select>
+                  
+                </div>
+                <div className="col-span-2">
+                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                    Work Type
+                  </label>
+                  <select
+                    value={formData.partTime ? "part-time" : "full-time"}
+                    onChange={(event) => updateField("partTime", event.target.value === "part-time")}
+                    className="w-full mt-1 px-4 py-2.5 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none"
+                  >
+                    <option value="part-time">Part-time</option>
+                    <option value="full-time">Full-time</option>
+                  </select>
+                </div>
+
                 <div className="col-span-2">
                   <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
                     License / Certification Name
@@ -319,16 +425,29 @@ export function AddEditGuide() {
 
                 <div className="col-span-2">
                   <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
-                    Tour Record Details
+                    Notes
                   </label>
-                  <input
-                    type="text"
-                    value={formData.tourRecord}
-                    onChange={(event) => updateField("tourRecord", event.target.value)}
-                    placeholder="Summary of key tours or regions covered..."
-                    className="w-full mt-1 px-4 py-2.5 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none"
+                  <textarea
+                    rows={4}
+                    value={formData.notes}
+                    onChange={(event) => updateField("notes", event.target.value)}
+                    placeholder="Enter guide notes..."
+                    className="w-full mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40"
                   />
                 </div>
+
+                {/* <div className="col-span-2">
+                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                    Biography
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={formData.tourRecord}
+                    onChange={(event) => updateField("tourRecord", event.target.value)}
+                    placeholder="Enter the guide biography or tour record details..."
+                    className="w-full mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40"
+                  />
+                </div> */}
 
                 <div className="bg-white border border-[#C4E8FF] p-4 rounded-xl">
                   <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest block">
@@ -350,32 +469,11 @@ export function AddEditGuide() {
                   </label>
                   <div className="mt-1 text-lg font-black text-[#1D3663]">{formData.whtTax.toFixed(2)}%</div>
                 </div>
-
-                <div className="bg-[#C4E8FF]/20 p-1.5 rounded-xl flex gap-1 h-fit my-auto border border-[#C4E8FF]">
-                  <button
-                    type="button"
-                    onClick={() => updateField("status", "Active")}
-                    className={`flex-1 py-1.5 text-[9px] font-black rounded-lg uppercase tracking-widest shadow-sm ${
-                      formData.status === "Active" ? "bg-[#1D3663] text-white" : "text-[#1D3663]/55"
-                    }`}
-                  >
-                    ACTIVE
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => updateField("status", "Inactive")}
-                    className={`flex-1 py-1.5 text-[9px] font-black rounded-lg uppercase tracking-widest ${
-                      formData.status === "Inactive" ? "bg-[#1D3663] text-white shadow-sm" : "text-[#1D3663]/55"
-                    }`}
-                  >
-                    INACTIVE
-                  </button>
-                </div>
               </div>
             </section>
           </div>
 
-          <div className="xl:col-span-5 space-y-6">
+          <div className="xl:col-span-5 flex flex-col gap-6 h-full">
             <section className="bg-white rounded-2xl p-6 shadow-sm border border-[#C4E8FF]">
               <h3 className="font-black text-[#1D3663] text-sm uppercase tracking-tight flex items-center gap-2 mb-6 border-b border-[#C4E8FF]/50 pb-3">
                 <Globe className="w-4 h-4 text-[#F3796A]" /> Language Skills
@@ -420,7 +518,7 @@ export function AddEditGuide() {
               </div>
             </section>
 
-            <section className="bg-white rounded-2xl p-6 shadow-sm border border-[#C4E8FF]">
+            {/* <section className="bg-white rounded-2xl p-6 shadow-sm border border-[#C4E8FF]">
               <h3 className="font-black text-[#1D3663] text-sm uppercase tracking-tight flex items-center gap-2 mb-4 border-b border-[#C4E8FF]/50 pb-3">
                 <Camera className="w-4 h-4 text-[#F3796A]" /> Profile Assets
               </h3>
@@ -438,57 +536,60 @@ export function AddEditGuide() {
                   </span>
                 </div>
               </div>
-            </section>
+            </section> */}
 
-            <section className="bg-white rounded-2xl p-6 shadow-sm border border-[#C4E8FF]">
+            <section className="flex-1 bg-white rounded-2xl p-6 shadow-sm border border-[#C4E8FF] flex flex-col">
               <h3 className="font-black text-[#1D3663] text-sm uppercase tracking-tight flex items-center gap-2 mb-4 border-b border-[#C4E8FF]/50 pb-3">
-                <FileText className="w-4 h-4 text-[#F3796A]" /> Client Tags & Biography
+                <FileText className="w-4 h-4 text-[#F3796A]" /> Client Tags
               </h3>
-              <div className="space-y-4">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newTagValue}
-                    onChange={(event) => setNewTagValue(event.target.value)}
-                    placeholder="Create client tag..."
-                    className="flex-1 bg-white border border-[#C4E8FF] rounded-xl px-4 py-2.5 text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleCreateTag}
-                    disabled={isTagLoading}
-                    className="px-4 py-2.5 bg-[#1D3663] text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:brightness-95 transition-all"
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      {isTagLoading && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
-                      Add Tag
-                    </span>
-                  </button>
+              <div className="flex-[4] flex flex-col space-y-4 min-h-0">
+                <div className="min-h-[2.5rem] flex-1 rounded-xl border border-[#C4E8FF] bg-white p-3 overflow-y-auto">
+                  <div className="flex flex-wrap gap-2">
+                    {appearanceTags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center gap-2 rounded-full border border-[#C4E8FF] bg-[#C4E8FF]/20 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-[#1D3663]"
+                      >
+                        {tag}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveTag(tag)}
+                          className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-white text-[#1D3663]/60 transition-colors hover:text-[#F3796A]"
+                          aria-label={`Remove ${tag}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+                    <input
+                      type="text"
+                      value={tagInput}
+                      onChange={(event) => setTagInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          handleAddTags();
+                        }
+                      }}
+                      placeholder={appearanceTags.length === 0 ? "Type a tag and press Enter" : "Add another tag"}
+                      className="min-w-[12rem] flex-1 border-none bg-transparent px-1 py-1 text-xs font-medium text-[#1D3663] outline-none placeholder:text-[#1D3663]/40"
+                    />
+                  </div>
                 </div>
-
-                <div className="flex flex-wrap gap-1.5">
-                  {tagOptions.map((tag) => (
-                    <button
-                      key={tag}
-                      type="button"
-                      onClick={() => toggleTag(tag)}
-                      className={`px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest border transition-all ${
-                        formData.tags.includes(tag)
-                          ? "bg-[#1D3663] border-[#1D3663] text-white"
-                          : "border-[#C4E8FF] text-[#1D3663]/65 bg-white hover:border-[#1D3663]/30"
-                      }`}
-                    >
-                      {tag}
-                    </button>
-                  ))}
-                </div>
-
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#1D3663]/50">
+                  Press `Enter` to create a tag. You can also paste multiple tags separated by commas.
+                </p>
+              </div>
+              <div className="flex-[6] min-h-0">
+                <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                  Biography
+                </label>
                 <textarea
-                  rows={6}
+                  rows={4}
                   value={formData.biography}
                   onChange={(event) => updateField("biography", event.target.value)}
-                  placeholder="Provide a detailed description of the guide's background and personal touch..."
-                  className="w-full bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium p-4 focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40"
+                  placeholder="Enter the guide biography..."
+                  className="w-full h-[calc(100%-1.5rem)] mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40 resize-none"
                 />
               </div>
             </section>

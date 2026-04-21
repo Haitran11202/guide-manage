@@ -15,7 +15,7 @@ import type {
 export const GUIDE_DIRECTORY_TAGS = ["CEO", "CEO-NAT", "CEO-GEO", "LUXE", "HMA", "RBT", "NRV"];
 export const GUIDE_FORM_TAGS = [...GUIDE_DIRECTORY_TAGS, "MICE", "VIP-CORP"];
 export const LANGUAGE_OPTIONS = ["English", "French", "Spanish", "German", "Italian", "Mandarin", "Japanese"];
-export const PROFICIENCY_LEVELS = ["Native", "Fluent", "Intermediate", "Basic"];
+export const PROFICIENCY_LEVELS = ["Basic", "Fluent", "Intermediate"];
 export const SERVICE_DAY_PARTS: ServiceDayPart[] = ["full-day", "morning", "afternoon", "evening"];
 
 const DEFAULT_AVATAR =
@@ -48,6 +48,7 @@ type ApiGuideDetail = {
   email: string;
   phone: string;
   dateOfBirth?: string | null;
+  address: string;
   city: string;
   country: string;
   avatar: string;
@@ -57,11 +58,13 @@ type ApiGuideDetail = {
   whtType: string;
   whtTax: number;
   tourRecord: string;
+  notes: string;
   licenseName: string;
   startDateWithUs?: string | null;
   historicalTours: number;
   averageRating: number;
   yearsExperience: number;
+  appearance?: string;
   tags: string[];
   languages: ApiGuideLanguage[];
   certifications: ApiGuideCertification[];
@@ -310,6 +313,12 @@ const ensureServiceDayPart = (value: string): ServiceDayPart => {
   return "full-day";
 };
 
+const parseAppearanceTags = (value: string) =>
+  value
+    .split(",")
+    .map((part) => normalizeTag(part))
+    .filter((tag, index, items) => tag.length > 0 && items.indexOf(tag) === index);
+
 const buildApiUrl = (path: string) => {
   const baseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim();
   if (!baseUrl) return path;
@@ -346,6 +355,7 @@ const mapGuideProfile = (guide: ApiGuideDetail): GuideProfileData => ({
   email: guide.email ?? "",
   phone: guide.phone ?? "",
   dateOfBirth: guide.dateOfBirth ? `${formatLongDate(guide.dateOfBirth)} (${getAge(guide.dateOfBirth)} yrs)` : "N/A",
+  address: guide.address ?? "",
   location: [guide.city, guide.country].filter(Boolean).join(", "),
   avatar: guide.avatar || DEFAULT_AVATAR,
   status: ensureGuideStatus(guide.status),
@@ -363,6 +373,7 @@ const mapGuideProfile = (guide: ApiGuideDetail): GuideProfileData => ({
     org: certification.org ?? undefined,
   })),
   tourRecord: guide.tourRecord ?? "",
+  notes: guide.notes ?? "",
   stats: {
     totalTours: guide.historicalTours ?? 0,
     avgRating: Number(guide.averageRating ?? 0),
@@ -378,14 +389,18 @@ const mapGuideFormData = (guide?: ApiGuideDetail | null): GuideFormData => ({
   email: guide?.email ?? "",
   phone: guide?.phone ?? "",
   dateOfBirth: guide?.dateOfBirth ?? "",
+  address: guide?.address ?? "",
   city: guide?.city ?? "",
+  country: guide?.country ?? "",
+  partTime: guide?.partTime ?? false,
   licenseName: guide?.licenseName ?? "",
   startDateWithUs: guide?.startDateWithUs ?? "",
   tourRecord: guide?.tourRecord ?? "",
+  notes: guide?.notes ?? "",
   whtType: ensureWhtType(guide?.whtType ?? "Resident"),
   whtTax: Number(guide?.whtTax ?? getWhtTaxByType("Resident")),
   status: ensureGuideStatus(guide?.status ?? "Active"),
-  tags: guide?.tags ?? [],
+  appearance: guide?.appearance ?? (guide?.tags ?? []).join(", "),
   languages:
     guide?.languages?.map((language) => ({
       language: language.language,
@@ -591,21 +606,24 @@ export const mockApi = {
       email: formData.email.trim(),
       phone: formData.phone.trim(),
       dateOfBirth: formData.dateOfBirth || null,
+      address: formData.address.trim(),
       city: formData.city.trim(),
-      country: "",
+      country: formData.country.trim(),
       avatar: DEFAULT_AVATAR,
       status: formData.status,
-      partTime: false,
+      partTime: formData.partTime,
       rating: 0,
       whtType: formData.whtType,
       whtTax: Number(formData.whtTax),
       tourRecord: formData.tourRecord.trim(),
+      notes: formData.notes.trim(),
       licenseName: formData.licenseName.trim(),
       startDateWithUs: formData.startDateWithUs || null,
       historicalTours: 0,
       averageRating: 0,
       yearsExperience: 0,
-      tags: formData.tags.map(normalizeTag),
+      appearance: formData.appearance.trim(),
+      tags: parseAppearanceTags(formData.appearance),
       languages: formData.languages
         .filter((language) => language.language && language.proficiency)
         .map((language) => ({

@@ -99,13 +99,13 @@ export function GuideProfile() {
             <aside className="lg:col-span-1 space-y-6">
               <section className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] overflow-hidden">
                 <div className="p-6 text-center">
-                  <div className="w-32 h-32 mx-auto mb-4">
+                  {/* <div className="w-32 h-32 mx-auto mb-4">
                     <ImageWithFallback
                       src={guideData.avatar}
                       alt="Guide Profile Picture"
                       className="w-full h-full object-cover rounded-full border-4 border-white shadow-sm"
                     />
-                  </div>
+                  </div> */}
                   <h2 className="text-2xl font-black text-[#1D3663]">{guideData.name}</h2>
                   <div className="flex items-center justify-center gap-2 mt-1 flex-wrap">
                     <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest bg-[#C4E8FF]/40 text-[#1D3663]">
@@ -155,6 +155,10 @@ export function GuideProfile() {
                   </div>
                   <div className="flex items-center gap-3 text-sm font-medium text-[#1D3663]">
                     <MapPin className="w-5 h-5 text-[#F3796A]" />
+                    <span>{guideData.address || "N/A"}</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-sm font-medium text-[#1D3663]">
+                    <MapPin className="w-5 h-5 text-[#F3796A]" />
                     <span>{guideData.location}</span>
                   </div>
                 </div>
@@ -169,7 +173,7 @@ export function GuideProfile() {
                     {guideData.languages.map((lang) => (
                       <div key={`${lang.language}-${lang.level}`} className="flex justify-between items-center">
                         <span className="text-[#1D3663] font-bold text-sm">{lang.language}</span>
-                        <span className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/60 bg-[#C4E8FF]/20 px-2 py-0.5 rounded border border-[#C4E8FF]">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/60 px-2 py-0.5 rounded">
                           {lang.level}
                         </span>
                       </div>
@@ -200,10 +204,10 @@ export function GuideProfile() {
 
                 <div className="pt-4 border-t border-[#C4E8FF]/50">
                   <h3 className="text-[9px] font-black text-[#1D3663]/50 uppercase tracking-widest mb-2">
-                    Tour Record
+                    Notes
                   </h3>
                   <p className="text-xs font-medium text-[#1D3663]/80 leading-relaxed italic border-l-2 border-[#F3796A] pl-3 py-1">
-                    {guideData.tourRecord}
+                    {guideData.notes || "N/A"}
                   </p>
                 </div>
               </section>
@@ -222,8 +226,14 @@ export function GuideProfile() {
                     Avg Rating
                   </p>
                   <div className="flex items-center gap-1.5">
-                    <p className="text-2xl font-black text-[#1D3663]">{guideData.stats.avgRating}</p>
-                    <Star className="w-5 h-5 text-yellow-400 fill-yellow-400" />
+                    {guideData.stats.avgRating > 0 ? (
+                      <>
+                        <p className="text-2xl font-black text-[#1D3663]">{guideData.stats.avgRating}</p>
+                        <Star className="w-5 h-5 text-yellow-400 fill-yellow-400" />
+                      </>
+                    ) : (
+                      <p className="text-2xl font-black text-[#1D3663]/45">N/A</p>
+                    )}
                   </div>
                 </div>
                 <div className="bg-white p-5 rounded-2xl shadow-sm border border-[#C4E8FF]">
@@ -247,7 +257,7 @@ export function GuideProfile() {
                 </div>
               </section>
 
-              <section className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] overflow-hidden">
+              {/* <section className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] overflow-hidden">
                 <div className="px-6 py-4 border-b border-[#C4E8FF] flex justify-between items-center bg-[#C4E8FF]/10">
                   <h3 className="text-sm font-black text-[#1D3663] uppercase tracking-wide">
                     Upcoming Tours
@@ -310,7 +320,7 @@ export function GuideProfile() {
                     </tbody>
                   </table>
                 </div>
-              </section>
+              </section> */}
             </div>
           </div>
         )}

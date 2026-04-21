@@ -136,6 +136,7 @@ export type GuideProfileData = {
   email: string;
   phone: string;
   dateOfBirth: string;
+  address: string;
   location: string;
   avatar: string;
   status: GuideStatus;
@@ -145,6 +146,7 @@ export type GuideProfileData = {
   languages: GuideLanguage[];
   certifications: GuideCertification[];
   tourRecord: string;
+  notes: string;
   stats: GuideProfileStats;
   bio: string[];
   upcomingTours: GuideUpcomingTour[];
@@ -156,14 +158,18 @@ export type GuideFormData = {
   email: string;
   phone: string;
   dateOfBirth: string;
+  address: string;
   city: string;
+  country: string;
+  partTime: boolean;
   licenseName: string;
   startDateWithUs: string;
   tourRecord: string;
+  notes: string;
   whtType: WhtType;
   whtTax: number;
   status: GuideStatus;
-  tags: string[];
+  appearance: string;
   languages: GuideFormLanguage[];
   biography: string;
 };

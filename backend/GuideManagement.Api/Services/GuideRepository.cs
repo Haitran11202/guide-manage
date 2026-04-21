@@ -5,6 +5,7 @@ namespace GuideManagement.Api.Services;
 
 public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : IGuideRepository
 {
+    private const int DefaultGuideCountryXid = 541;
     private static readonly object CustomTagsLock = new();
     private static readonly HashSet<string> CustomTags = new(StringComparer.OrdinalIgnoreCase);
 
@@ -17,7 +18,8 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 g.OnOff,
                 g.Partime,
                 g.GuideRank,
-                g.ExactCode
+                g.ExactCode,
+                g.Appearance
             FROM dbo.M_SupplierGuide g
             ORDER BY g.Guide;
             """;
@@ -32,6 +34,7 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
         while (await reader.ReadAsync(cancellationToken))
         {
             var exactCode = reader.IsDBNull(5) ? string.Empty : reader.GetString(5).Trim();
+            var appearance = reader.IsDBNull(6) ? string.Empty : reader.GetString(6).Trim();
             guides.Add(new GuideDirectoryItemDto
             {
                 Id = reader.GetInt32(0),
@@ -39,7 +42,7 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 Status = MapStatus(reader.IsDBNull(2) ? string.Empty : reader.GetString(2)),
                 PartTime = MapPartTime(reader.IsDBNull(3) ? string.Empty : reader.GetString(3)),
                 Rating = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
-                Tags = string.IsNullOrWhiteSpace(exactCode) ? [] : [exactCode]
+                Tags = ParseAppearanceTags(appearance, exactCode)
             });
         }
 
@@ -55,8 +58,9 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 g.Email,
                 g.Phone,
                 g.BirthDay,
-                g.Address,
-                g.CountryName,
+                LTRIM(RTRIM(ISNULL(g.Address, ''))) AS Address,
+                LTRIM(RTRIM(ISNULL(city.City, ''))) AS CityName,
+                LTRIM(RTRIM(ISNULL(country.Country, ISNULL(g.CountryName, '')))) AS CountryName,
                 g.OnOff,
                 g.Partime,
                 g.GuideRank,
@@ -70,8 +74,35 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 g.Aboutme,
                 g.ExperienceAndAchievements,
                 g.PersonalInterests,
-                g.History
+                g.History,
+                g.Notes,
+                g.Appearance,
+                ISNULL(tours.TotalTours, 0) AS TotalTours,
+                wht.WHTType,
+                (wht.WHTRate * 100.0) AS WHTRate
             FROM dbo.M_SupplierGuide g
+            LEFT JOIN dbo.M_City city
+                ON city.Pid = g.CityXid
+            LEFT JOIN dbo.M_Country country
+                ON country.Pid = g.CountryXid
+            OUTER APPLY
+            (
+                SELECT COUNT(1) AS TotalTours
+                FROM dbo.Res_holidayGuide rhg
+                WHERE rhg.SupplierGuideXid = g.Pid
+            ) tours
+            OUTER APPLY
+            (
+                SELECT TOP (1)
+                    sgw.WHTType,
+                    sgw.WHTRate 
+                FROM dbo.M_SupplierGuide_WHT sgw
+                WHERE sgw.SupplierGuideXid = g.Pid
+                ORDER BY
+                    sgw.WHTValidFrom DESC,
+                    sgw.LastEdit DESC,
+                    sgw.Pid DESC
+            ) wht
             WHERE g.Pid = @Id;
             """;
 
@@ -86,47 +117,73 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
             return null;
         }
 
-        var exactCode = reader.IsDBNull(12) ? string.Empty : reader.GetString(12).Trim();
-        var languageSkill = reader.IsDBNull(13) ? string.Empty : reader.GetString(13).Trim();
-        var languageXid = reader.IsDBNull(14) ? (int?)null : reader.GetInt32(14);
+        var guideId = reader.GetInt32(0);
+        var guideName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+        var email = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+        var phone = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+        DateOnly? dateOfBirth = reader.IsDBNull(4) ? null : DateOnly.FromDateTime(reader.GetDateTime(4));
+        var address = reader.IsDBNull(5) ? string.Empty : reader.GetString(5);
+        var city = reader.IsDBNull(6) ? string.Empty : reader.GetString(6);
+        var country = reader.IsDBNull(7) ? string.Empty : reader.GetString(7);
+        var status = MapStatus(reader.IsDBNull(8) ? string.Empty : reader.GetString(8));
+        var partTime = MapPartTime(reader.IsDBNull(9) ? string.Empty : reader.GetString(9));
+        var rating = reader.IsDBNull(10) ? 0 : reader.GetInt32(10);
+        var licenseName = reader.IsDBNull(11) ? string.Empty : reader.GetString(11);
+        DateOnly? startDateWithUs = reader.IsDBNull(12) ? null : DateOnly.FromDateTime(reader.GetDateTime(12));
+        var exactCode = reader.IsDBNull(13) ? string.Empty : reader.GetString(13).Trim();
+        var languageSkill = reader.IsDBNull(14) ? string.Empty : reader.GetString(14).Trim();
+        var baseLanguageXid = reader.IsDBNull(15) ? (int?)null : reader.GetInt32(15);
+        var notes = reader.IsDBNull(22) ? string.Empty : reader.GetString(22).Trim();
+        var appearance = reader.IsDBNull(23) ? string.Empty : reader.GetString(23).Trim();
+        var totalTours = reader.IsDBNull(24) ? 0 : reader.GetInt32(24);
+        var whtType = reader.IsDBNull(25) ? "Resident" : reader.GetString(25).Trim();
+        var whtTax = reader.IsDBNull(26) ? 10.21m : reader.GetDecimal(26);
 
         var bio = new List<string>();
-        AddIfHasValue(bio, reader.IsDBNull(17) ? string.Empty : reader.GetString(17));
         AddIfHasValue(bio, reader.IsDBNull(18) ? string.Empty : reader.GetString(18));
-        AddIfHasValue(bio, reader.IsDBNull(19) ? string.Empty : reader.GetString(19));
         if (bio.Count == 0)
         {
             bio.Add("Guide profile synced from M_SupplierGuide.");
         }
 
         var tourRecordParts = new List<string>();
-        AddIfHasValue(tourRecordParts, reader.IsDBNull(15) ? string.Empty : reader.GetString(15));
         AddIfHasValue(tourRecordParts, reader.IsDBNull(16) ? string.Empty : reader.GetString(16));
+        AddIfHasValue(tourRecordParts, reader.IsDBNull(17) ? string.Empty : reader.GetString(17));
+        await reader.DisposeAsync();
+
+        var languages = await GetGuideLanguagesAsync(id, connection, null, cancellationToken);
+        if (languages.Count == 0)
+        {
+            languages = await BuildFallbackLanguagesAsync(baseLanguageXid, languageSkill, connection, null, cancellationToken);
+        }
 
         return new GuideDetailDto
         {
-            Id = reader.GetInt32(0),
-            Name = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
-            Email = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
-            Phone = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
-            DateOfBirth = reader.IsDBNull(4) ? null : DateOnly.FromDateTime(reader.GetDateTime(4)),
-            City = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
-            Country = reader.IsDBNull(6) ? string.Empty : reader.GetString(6),
+            Id = guideId,
+            Name = guideName,
+            Email = email,
+            Phone = phone,
+            DateOfBirth = dateOfBirth,
+            Address = address,
+            City = city,
+            Country = country,
             Avatar = string.Empty,
-            Status = MapStatus(reader.IsDBNull(7) ? string.Empty : reader.GetString(7)),
-            PartTime = MapPartTime(reader.IsDBNull(8) ? string.Empty : reader.GetString(8)),
-            Rating = reader.IsDBNull(9) ? 0 : reader.GetInt32(9),
-            WhtType = "Resident",
-            WhtTax = 10.21m,
+            Status = status,
+            PartTime = partTime,
+            Rating = rating,
+            WhtType = whtType,
+            WhtTax = whtTax,
             TourRecord = tourRecordParts.Count == 0 ? string.Empty : string.Join("\n", tourRecordParts),
-            LicenseName = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
-            StartDateWithUs = reader.IsDBNull(11) ? null : DateOnly.FromDateTime(reader.GetDateTime(11)),
-            HistoricalTours = reader.IsDBNull(20) ? 0 : reader.GetInt32(20),
+            LicenseName = licenseName,
+            StartDateWithUs = startDateWithUs,
+            HistoricalTours = totalTours,
             AverageRating = 0m,
-            YearsExperience = CalculateYearsExperience(reader.IsDBNull(11) ? null : reader.GetDateTime(11)),
-            Tags = string.IsNullOrWhiteSpace(exactCode) ? [] : [exactCode],
-            Languages = BuildLanguages(languageXid, languageSkill),
-            Certifications = BuildCertifications(reader.IsDBNull(10) ? string.Empty : reader.GetString(10)),
+            YearsExperience = CalculateYearsExperience(startDateWithUs?.ToDateTime(TimeOnly.MinValue)),
+            Appearance = appearance,
+            Notes = notes,
+            Tags = ParseAppearanceTags(appearance, exactCode),
+            Languages = languages,
+            Certifications = BuildCertifications(licenseName),
             Bio = bio
         };
     }
@@ -143,6 +200,7 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 OnOff,
                 Phone,
                 Email,
+                CityXid,
                 Address,
                 LastEdit,
                 GuideRank,
@@ -153,6 +211,9 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 DestinationsKnowledge,
                 ExpertiseExperience,
                 ExactCode,
+                Appearance,
+                Notes,
+                CountryXid,
                 CountryName,
                 Aboutme,
                 ExperienceAndAchievements,
@@ -168,6 +229,7 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 @OnOff,
                 @Phone,
                 @Email,
+                @CityXid,
                 @Address,
                 GETDATE(),
                 @GuideRank,
@@ -178,6 +240,9 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 @DestinationsKnowledge,
                 @ExpertiseExperience,
                 @ExactCode,
+                @Appearance,
+                @Notes,
+                @CountryXid,
                 @CountryName,
                 @Aboutme,
                 @ExperienceAndAchievements,
@@ -187,11 +252,17 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
         await using var command = new SqlCommand(sql, connection);
+        command.Transaction = transaction;
         BindGuideUpsertParameters(command, request);
+        await SetResolvedCityAsync(command, request.City, connection, transaction, cancellationToken);
 
         var result = await command.ExecuteScalarAsync(cancellationToken);
-        return Convert.ToInt32(result);
+        var guideId = Convert.ToInt32(result);
+        await SaveGuideLanguagesAsync(guideId, request.Languages, connection, transaction, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return guideId;
     }
 
     public async Task UpdateGuideAsync(int id, GuideUpsertRequest request, CancellationToken cancellationToken)
@@ -205,6 +276,7 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 OnOff = @OnOff,
                 Phone = @Phone,
                 Email = @Email,
+                CityXid = @CityXid,
                 Address = @Address,
                 LastEdit = GETDATE(),
                 GuideRank = @GuideRank,
@@ -215,6 +287,9 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 DestinationsKnowledge = @DestinationsKnowledge,
                 ExpertiseExperience = @ExpertiseExperience,
                 ExactCode = @ExactCode,
+                Appearance = @Appearance,
+                Notes = @Notes,
+                CountryXid = @CountryXid,
                 CountryName = @CountryName,
                 Aboutme = @Aboutme,
                 ExperienceAndAchievements = @ExperienceAndAchievements,
@@ -224,19 +299,28 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
         await using var command = new SqlCommand(sql, connection);
+        command.Transaction = transaction;
         BindGuideUpsertParameters(command, request);
+        await SetResolvedCityAsync(command, request.City, connection, transaction, cancellationToken);
         command.Parameters.AddWithValue("@Id", id);
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await SaveGuideLanguagesAsync(id, request.Languages, connection, transaction, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<string>> GetGuideClientTagsAsync(CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT DISTINCT g.ExactCode
+            SELECT
+                g.Appearance,
+                g.ExactCode
             FROM dbo.M_SupplierGuide g
-            WHERE g.ExactCode IS NOT NULL AND LTRIM(RTRIM(g.ExactCode)) <> ''
-            ORDER BY g.ExactCode;
+            WHERE
+                (g.Appearance IS NOT NULL AND LTRIM(RTRIM(g.Appearance)) <> '')
+                OR (g.ExactCode IS NOT NULL AND LTRIM(RTRIM(g.ExactCode)) <> '')
+            ORDER BY g.Appearance, g.ExactCode;
             """;
 
         var tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -248,7 +332,12 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
 
         while (await reader.ReadAsync(cancellationToken))
         {
-            tags.Add(reader.GetString(0).Trim());
+            var appearance = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+            var exactCode = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+            foreach (var tag in ParseAppearanceTags(appearance, exactCode))
+            {
+                tags.Add(tag);
+            }
         }
 
         lock (CustomTagsLock)
@@ -280,16 +369,14 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
     {
         const string sql = """
             SELECT DISTINCT
-                CASE
-                    WHEN g.Address IS NOT NULL AND LTRIM(RTRIM(g.Address)) <> '' THEN LTRIM(RTRIM(g.Address))
-                    WHEN g.CityXid IS NOT NULL THEN 'City ' + CAST(g.CityXid AS varchar(20))
-                    ELSE ''
-                END AS City,
-                ISNULL(g.CountryName, '') AS Country
-            FROM dbo.M_SupplierGuide g
-            WHERE
-                (g.Address IS NOT NULL AND LTRIM(RTRIM(g.Address)) <> '')
-                OR g.CityXid IS NOT NULL
+                LTRIM(RTRIM(ISNULL(city.City, ''))) AS City,
+                LTRIM(RTRIM(ISNULL(country.Country, ''))) AS Country
+            FROM dbo.M_City city
+            LEFT JOIN dbo.M_Country country
+                ON country.Pid = city.CountryXid
+            WHERE city.City IS NOT NULL
+              AND LTRIM(RTRIM(city.City)) <> ''
+              AND city.CountryXid = @CountryXid
             ORDER BY City;
             """;
 
@@ -298,6 +385,7 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var command = new SqlCommand(sql, connection);
+        command.Parameters.AddWithValue("@CountryXid", DefaultGuideCountryXid);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         while (await reader.ReadAsync(cancellationToken))
@@ -353,15 +441,19 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
         command.Parameters.AddWithValue("@OnOff", string.Equals(request.Status, "Active", StringComparison.OrdinalIgnoreCase) ? "ON" : "OFF");
         command.Parameters.AddWithValue("@Phone", request.Phone.Trim());
         command.Parameters.AddWithValue("@Email", request.Email.Trim());
-        command.Parameters.AddWithValue("@Address", request.City.Trim());
+        command.Parameters.AddWithValue("@CityXid", DBNull.Value);
+        command.Parameters.AddWithValue("@Address", request.Address.Trim());
         command.Parameters.AddWithValue("@GuideRank", request.Rating);
         command.Parameters.AddWithValue("@GuideLicense", request.LicenseName.Trim());
         command.Parameters.AddWithValue("@BirthDay", request.DateOfBirth?.ToDateTime(TimeOnly.MinValue) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("@StartDateWithBT", request.StartDateWithUs?.ToDateTime(TimeOnly.MinValue) ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("@Languageskill", request.Languages.FirstOrDefault()?.Level ?? string.Empty);
         command.Parameters.AddWithValue("@DestinationsKnowledge", request.TourRecord.Trim());
-        command.Parameters.AddWithValue("@ExpertiseExperience", request.TourRecord.Trim());
+        command.Parameters.AddWithValue("@ExpertiseExperience", string.Empty);
         command.Parameters.AddWithValue("@ExactCode", request.Tags.FirstOrDefault() ?? string.Empty);
+        command.Parameters.AddWithValue("@Appearance", request.Appearance.Trim());
+        command.Parameters.AddWithValue("@Notes", request.Notes.Trim());
+        command.Parameters.AddWithValue("@CountryXid", DBNull.Value);
         command.Parameters.AddWithValue("@CountryName", request.Country.Trim());
         command.Parameters.AddWithValue("@Aboutme", request.Bio.FirstOrDefault() ?? string.Empty);
         command.Parameters.AddWithValue("@ExperienceAndAchievements", request.Bio.Skip(1).FirstOrDefault() ?? string.Empty);
@@ -374,9 +466,79 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
         return int.TryParse(raw, out var value) ? value : 0;
     }
 
-    private static IReadOnlyList<GuideLanguageDto> BuildLanguages(int? languageXid, string languageSkill)
+    private static async Task SetResolvedCityAsync(
+        SqlCommand command,
+        string cityName,
+        SqlConnection connection,
+        SqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var cityInfo = await ResolveCityInfoAsync(cityName, connection, transaction, cancellationToken);
+        command.Parameters["@CityXid"].Value = cityInfo is null ? DBNull.Value : cityInfo.CityXid;
+        command.Parameters["@CountryXid"].Value = cityInfo?.CountryXid ?? DefaultGuideCountryXid;
+        command.Parameters["@CountryName"].Value = string.IsNullOrWhiteSpace(cityInfo?.CountryName)
+            ? await GetCountryNameAsync(DefaultGuideCountryXid, connection, transaction, cancellationToken)
+            : cityInfo.CountryName;
+    }
+
+    private async Task<IReadOnlyList<GuideLanguageDto>> GetGuideLanguagesAsync(
+        int guideId,
+        SqlConnection connection,
+        SqlTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                LTRIM(RTRIM(ISNULL(lang.LanguageName, ''))) AS LanguageName,
+                LTRIM(RTRIM(ISNULL(sgl.LanguageSkill, ''))) AS LanguageSkill
+            FROM dbo.M_SupplierGuideLanguage sgl
+            LEFT JOIN dbo.M_Language lang
+                ON lang.Pid = sgl.LanguageXid
+            WHERE sgl.SupplierGuideXid = @GuideId
+            ORDER BY sgl.Pid;
+            """;
+
+        var languages = new List<GuideLanguageDto>();
+        await using var command = new SqlCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("@GuideId", guideId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var languageName = reader.IsDBNull(0) ? string.Empty : reader.GetString(0).Trim();
+            var languageSkill = reader.IsDBNull(1) ? string.Empty : reader.GetString(1).Trim();
+            if (string.IsNullOrWhiteSpace(languageName) && string.IsNullOrWhiteSpace(languageSkill))
+            {
+                continue;
+            }
+
+            languages.Add(new GuideLanguageDto
+            {
+                Language = string.IsNullOrWhiteSpace(languageName) ? "Language" : languageName,
+                Level = string.IsNullOrWhiteSpace(languageSkill) ? "N/A" : languageSkill
+            });
+        }
+
+        return languages;
+    }
+
+    private async Task<IReadOnlyList<GuideLanguageDto>> BuildFallbackLanguagesAsync(
+        int? languageXid,
+        string languageSkill,
+        SqlConnection connection,
+        SqlTransaction? transaction,
+        CancellationToken cancellationToken)
     {
         if (!languageXid.HasValue && string.IsNullOrWhiteSpace(languageSkill))
+        {
+            return [];
+        }
+
+        var languageName = languageXid.HasValue
+            ? await GetLanguageNameAsync(languageXid.Value, connection, transaction, cancellationToken)
+            : string.Empty;
+
+        if (string.IsNullOrWhiteSpace(languageName) && string.IsNullOrWhiteSpace(languageSkill))
         {
             return [];
         }
@@ -385,10 +547,167 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
         [
             new GuideLanguageDto
             {
-                Language = languageXid.HasValue ? $"Language {languageXid.Value}" : "Language",
+                Language = string.IsNullOrWhiteSpace(languageName) ? "Language" : languageName,
                 Level = string.IsNullOrWhiteSpace(languageSkill) ? "N/A" : languageSkill
             }
         ];
+    }
+
+    private async Task SaveGuideLanguagesAsync(
+        int guideId,
+        IReadOnlyList<GuideLanguageDto> languages,
+        SqlConnection connection,
+        SqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        const string deleteSql = """
+            DELETE FROM dbo.M_SupplierGuideLanguage
+            WHERE SupplierGuideXid = @GuideId;
+            """;
+        const string insertSql = """
+            INSERT INTO dbo.M_SupplierGuideLanguage
+            (
+                SupplierGuideXid,
+                LanguageXid,
+                LanguageSkill
+            )
+            VALUES
+            (
+                @GuideId,
+                @LanguageXid,
+                @LanguageSkill
+            );
+            """;
+
+        await using (var deleteCommand = new SqlCommand(deleteSql, connection, transaction))
+        {
+            deleteCommand.Parameters.AddWithValue("@GuideId", guideId);
+            await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var validLanguages = languages
+            .Where(static language => !string.IsNullOrWhiteSpace(language.Language) || !string.IsNullOrWhiteSpace(language.Level))
+            .ToArray();
+        if (validLanguages.Length == 0)
+        {
+            return;
+        }
+
+        foreach (var language in validLanguages)
+        {
+            var languageXid = await ResolveLanguageXidAsync(language.Language, connection, transaction, cancellationToken);
+            if (!languageXid.HasValue)
+            {
+                continue;
+            }
+
+            await using var insertCommand = new SqlCommand(insertSql, connection, transaction);
+            insertCommand.Parameters.AddWithValue("@GuideId", guideId);
+            insertCommand.Parameters.AddWithValue("@LanguageXid", languageXid.Value);
+            insertCommand.Parameters.AddWithValue("@LanguageSkill", string.IsNullOrWhiteSpace(language.Level) ? (object)DBNull.Value : language.Level.Trim());
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task<string> GetLanguageNameAsync(
+        int languageXid,
+        SqlConnection connection,
+        SqlTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1) LTRIM(RTRIM(ISNULL(lang.LanguageName, '')))
+            FROM dbo.M_Language lang
+            WHERE lang.Pid = @LanguageXid;
+            """;
+
+        await using var command = new SqlCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("@LanguageXid", languageXid);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is string value ? value.Trim() : string.Empty;
+    }
+
+    private static async Task<int?> ResolveLanguageXidAsync(
+        string languageName,
+        SqlConnection connection,
+        SqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(languageName))
+        {
+            return null;
+        }
+
+        const string sql = """
+            SELECT TOP (1) lang.Pid
+            FROM dbo.M_Language lang
+            WHERE LTRIM(RTRIM(ISNULL(lang.LanguageName, ''))) = @LanguageName
+            ORDER BY lang.Pid;
+            """;
+
+        await using var command = new SqlCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("@LanguageName", languageName.Trim());
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? null : Convert.ToInt32(result);
+    }
+
+    private sealed record ResolvedCityInfo(int CityXid, int CountryXid, string CountryName);
+
+    private static async Task<ResolvedCityInfo?> ResolveCityInfoAsync(
+        string cityName,
+        SqlConnection connection,
+        SqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(cityName))
+        {
+            return null;
+        }
+
+        const string sql = """
+            SELECT TOP (1)
+                city.Pid,
+                ISNULL(city.CountryXid, @CountryXid) AS CountryXid,
+                LTRIM(RTRIM(ISNULL(country.Country, ''))) AS CountryName
+            FROM dbo.M_City city
+            LEFT JOIN dbo.M_Country country
+                ON country.Pid = city.CountryXid
+            WHERE LTRIM(RTRIM(ISNULL(city.City, ''))) = @CityName
+              AND city.CountryXid = @CountryXid
+            ORDER BY city.Pid;
+            """;
+
+        await using var command = new SqlCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("@CityName", cityName.Trim());
+        command.Parameters.AddWithValue("@CountryXid", DefaultGuideCountryXid);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new ResolvedCityInfo(
+            reader.GetInt32(0),
+            reader.IsDBNull(1) ? DefaultGuideCountryXid : reader.GetInt32(1),
+            reader.IsDBNull(2) ? string.Empty : reader.GetString(2).Trim());
+    }
+
+    private static async Task<string> GetCountryNameAsync(
+        int countryXid,
+        SqlConnection connection,
+        SqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1) LTRIM(RTRIM(ISNULL(country.Country, '')))
+            FROM dbo.M_Country country
+            WHERE country.Pid = @CountryXid;
+            """;
+
+        await using var command = new SqlCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("@CountryXid", countryXid);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is string value ? value.Trim() : string.Empty;
     }
 
     private static IReadOnlyList<GuideCertificationDto> BuildCertifications(string guideLicense)
@@ -416,6 +735,22 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
         {
             target.Add(value.Trim());
         }
+    }
+
+    private static IReadOnlyList<string> ParseAppearanceTags(string appearance, string fallbackTag = "")
+    {
+        var tags = appearance
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (tags.Length > 0)
+        {
+            return tags;
+        }
+
+        return string.IsNullOrWhiteSpace(fallbackTag) ? [] : [fallbackTag.Trim()];
     }
 
     private static string MapStatus(string onOff)
