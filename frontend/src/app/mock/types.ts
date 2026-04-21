@@ -147,6 +147,10 @@ export type GuideProfileData = {
   certifications: GuideCertification[];
   tourRecord: string;
   notes: string;
+  taxCode: string;
+  bankName: string;
+  bankAccountNumber: string;
+  bankAccountName: string;
   stats: GuideProfileStats;
   bio: string[];
   upcomingTours: GuideUpcomingTour[];
@@ -166,6 +170,10 @@ export type GuideFormData = {
   startDateWithUs: string;
   tourRecord: string;
   notes: string;
+  taxCode: string;
+  bankName: string;
+  bankAccountNumber: string;
+  bankAccountName: string;
   whtType: WhtType;
   whtTax: number;
   status: GuideStatus;

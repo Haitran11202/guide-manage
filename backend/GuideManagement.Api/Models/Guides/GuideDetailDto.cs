@@ -24,6 +24,10 @@ public sealed class GuideDetailDto
     public int YearsExperience { get; init; }
     public string Appearance { get; init; } = string.Empty;
     public string Notes { get; init; } = string.Empty;
+    public string TaxCode { get; init; } = string.Empty;
+    public string BankName { get; init; } = string.Empty;
+    public string BankAccountNumber { get; init; } = string.Empty;
+    public string BankAccountName { get; init; } = string.Empty;
     public IReadOnlyList<string> Tags { get; init; } = [];
     public IReadOnlyList<GuideLanguageDto> Languages { get; init; } = [];
     public IReadOnlyList<GuideCertificationDto> Certifications { get; init; } = [];

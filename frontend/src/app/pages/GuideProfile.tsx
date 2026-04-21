@@ -3,6 +3,7 @@ import { useParams, Link } from "react-router";
 import { Star, Mail, Phone, Calendar, MapPin } from "lucide-react";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
 import { LoadingOverlay } from "../components/ui/LoadingOverlay";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { mockApi } from "../mock/api";
 import type { GuideProfileData } from "../mock/types";
 
@@ -95,7 +96,7 @@ export function GuideProfile() {
             </Link>
           </section>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <aside className="lg:col-span-1 space-y-6">
               <section className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] overflow-hidden">
                 <div className="p-6 text-center">
@@ -161,28 +162,24 @@ export function GuideProfile() {
                     <MapPin className="w-5 h-5 text-[#F3796A]" />
                     <span>{guideData.location}</span>
                   </div>
-                </div>
-              </section>
 
-              <section className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] p-6 space-y-6">
-                <div>
-                  <h3 className="text-[9px] font-black text-[#1D3663]/50 uppercase tracking-widest mb-3">
-                    Professional Languages
-                  </h3>
-                  <div className="space-y-2">
-                    {guideData.languages.map((lang) => (
-                      <div key={`${lang.language}-${lang.level}`} className="flex justify-between items-center">
-                        <span className="text-[#1D3663] font-bold text-sm">{lang.language}</span>
-                        <span className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/60 px-2 py-0.5 rounded">
-                          {lang.level}
-                        </span>
-                      </div>
-                    ))}
+                  <div className="pt-3 border-t border-[#C4E8FF]/50">
+                    <h3 className="text-[9px] font-black text-[#1D3663]/50 uppercase tracking-widest mb-3">
+                      Professional Languages
+                    </h3>
+                    <div className="space-y-2">
+                      {guideData.languages.map((lang) => (
+                        <div key={`${lang.language}-${lang.level}`} className="flex justify-between items-center">
+                          <span className="text-[#1D3663] font-bold text-sm">{lang.language}</span>
+                          <span className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/60 px-2 py-0.5 rounded">
+                            {lang.level}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-
-                <div>
-                  <h3 className="text-[9px] font-black text-[#1D3663]/50 uppercase tracking-widest mb-3">
+                  <div className="pt-3 border-t border-[#C4E8FF]/50">
+                   <h3 className="text-[9px] font-black text-[#1D3663]/50 uppercase tracking-widest mb-3">
                     Licenses & Certifications
                   </h3>
                   <ul className="space-y-3">
@@ -200,21 +197,15 @@ export function GuideProfile() {
                       </li>
                     ))}
                   </ul>
-                </div>
-
-                <div className="pt-4 border-t border-[#C4E8FF]/50">
-                  <h3 className="text-[9px] font-black text-[#1D3663]/50 uppercase tracking-widest mb-2">
-                    Notes
-                  </h3>
-                  <p className="text-xs font-medium text-[#1D3663]/80 leading-relaxed italic border-l-2 border-[#F3796A] pl-3 py-1">
-                    {guideData.notes || "N/A"}
-                  </p>
+                  </div>
                 </div>
               </section>
+
+              
             </aside>
 
             <div className="lg:col-span-2 space-y-8">
-              <section className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+              <section className="grid grid-cols-3 sm:grid-cols-3 gap-4">
                 <div className="bg-white p-5 rounded-2xl shadow-sm border border-[#C4E8FF]">
                   <p className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/50 mb-1">
                     Total Tours
@@ -238,24 +229,72 @@ export function GuideProfile() {
                 </div>
                 <div className="bg-white p-5 rounded-2xl shadow-sm border border-[#C4E8FF]">
                   <p className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/50 mb-1">
-                    Years Exp.
+                    Guide Rank
                   </p>
                   <p className="text-2xl font-black text-[#1D3663]">{guideData.stats.yearsExp}</p>
                 </div>
               </section>
 
-              <section className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] p-8">
-                <h3 className="text-base font-black text-[#1D3663] uppercase tracking-tight mb-4">
-                  About {guideData.name.split(" ")[0]}
-                </h3>
-                <div className="max-w-none space-y-4">
-                  {guideData.bio.map((paragraph, index) => (
-                    <p key={`${guideData.id}-${index}`} className="text-[#1D3663]/80 font-medium text-sm leading-relaxed">
-                      {paragraph}
+              <Tabs defaultValue="overview" className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] p-6">
+                <TabsList className="bg-[#C4E8FF]/20 p-1 rounded-2xl">
+                  <TabsTrigger value="overview" className="text-[#1D3663] font-black uppercase tracking-widest text-[10px]">
+                    Overview
+                  </TabsTrigger>
+                  <TabsTrigger value="final-info" className="text-[#1D3663] font-black uppercase tracking-widest text-[10px]">
+                    Final Info
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="overview" className="pt-4 space-y-8">
+                  <section className="bg-white rounded-2xl border border-[#C4E8FF] p-8">
+                    <h3 className="text-base font-black text-[#1D3663] uppercase tracking-tight mb-4">
+                      About {guideData.name.split(" ")[0]}
+                    </h3>
+                    <div className="max-w-none space-y-4">
+                      {guideData.bio.map((paragraph, index) => (
+                        <p key={`${guideData.id}-${index}`} className="text-[#1D3663]/80 font-medium text-sm leading-relaxed">
+                          {paragraph}
+                        </p>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="bg-white rounded-2xl border border-[#C4E8FF] p-8">
+                    <h3 className="text-base font-black text-[#1D3663] uppercase tracking-tight mb-4">
+                      Notes
+                    </h3>
+                    <p className="text-sm font-medium text-[#1D3663]/80 leading-relaxed italic border-l-2 border-[#F3796A] pl-3 py-1">
+                      {guideData.notes || "N/A"}
                     </p>
-                  ))}
-                </div>
-              </section>
+                  </section>
+                </TabsContent>
+
+                <TabsContent value="final-info" className="pt-4">
+                  <section className="bg-white rounded-2xl border border-[#C4E8FF] p-8">
+                    <h3 className="text-base font-black text-[#1D3663] uppercase tracking-tight mb-6">
+                      Final Info
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="rounded-2xl border border-[#C4E8FF] bg-[#C4E8FF]/10 p-4">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/50 mb-2">Tax Code</p>
+                        <p className="text-sm font-bold text-[#1D3663]">{guideData.taxCode || "N/A"}</p>
+                      </div>
+                      <div className="rounded-2xl border border-[#C4E8FF] bg-[#C4E8FF]/10 p-4">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/50 mb-2">Bank Name</p>
+                        <p className="text-sm font-bold text-[#1D3663]">{guideData.bankName || "N/A"}</p>
+                      </div>
+                      <div className="rounded-2xl border border-[#C4E8FF] bg-[#C4E8FF]/10 p-4">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/50 mb-2">Bank Account Number</p>
+                        <p className="text-sm font-bold text-[#1D3663]">{guideData.bankAccountNumber || "N/A"}</p>
+                      </div>
+                      <div className="rounded-2xl border border-[#C4E8FF] bg-[#C4E8FF]/10 p-4">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-[#1D3663]/50 mb-2">Bank Account Name</p>
+                        <p className="text-sm font-bold text-[#1D3663]">{guideData.bankAccountName || "N/A"}</p>
+                      </div>
+                    </div>
+                  </section>
+                </TabsContent>
+              </Tabs>
 
               {/* <section className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] overflow-hidden">
                 <div className="px-6 py-4 border-b border-[#C4E8FF] flex justify-between items-center bg-[#C4E8FF]/10">

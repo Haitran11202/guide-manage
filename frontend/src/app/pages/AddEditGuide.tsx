@@ -37,6 +37,10 @@ export function AddEditGuide() {
     startDateWithUs: "",
     tourRecord: "",
     notes: "",
+    taxCode: "",
+    bankName: "",
+    bankAccountNumber: "",
+    bankAccountName: "",
     whtType: "Resident",
     whtTax: getWhtTaxByType("Resident"),
     status: "Active",
@@ -433,6 +437,58 @@ export function AddEditGuide() {
                     onChange={(event) => updateField("notes", event.target.value)}
                     placeholder="Enter guide notes..."
                     className="w-full mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40"
+                  />
+                </div>
+
+                <div className="col-span-2">
+                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                    Tax Code
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.taxCode}
+                    onChange={(event) => updateField("taxCode", event.target.value)}
+                    placeholder="Enter tax code"
+                    className="w-full mt-1 px-4 py-2.5 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                    Bank Name
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.bankName}
+                    onChange={(event) => updateField("bankName", event.target.value)}
+                    placeholder="Enter bank name"
+                    className="w-full mt-1 px-4 py-2.5 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                    Bank Account Number
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.bankAccountNumber}
+                    onChange={(event) => updateField("bankAccountNumber", event.target.value)}
+                    placeholder="Enter account number"
+                    className="w-full mt-1 px-4 py-2.5 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none"
+                  />
+                </div>
+
+                <div className="col-span-2">
+                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                    Bank Account Name
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.bankAccountName}
+                    onChange={(event) => updateField("bankAccountName", event.target.value)}
+                    placeholder="Enter account name"
+                    className="w-full mt-1 px-4 py-2.5 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none"
                   />
                 </div>
 

@@ -76,6 +76,10 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 g.PersonalInterests,
                 g.History,
                 g.Notes,
+                g.TaxCode,
+                g.BankName,
+                g.BankAccountNumber,
+                g.BankAccountName,
                 g.Appearance,
                 ISNULL(tours.TotalTours, 0) AS TotalTours,
                 wht.WHTType,
@@ -134,10 +138,14 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
         var languageSkill = reader.IsDBNull(14) ? string.Empty : reader.GetString(14).Trim();
         var baseLanguageXid = reader.IsDBNull(15) ? (int?)null : reader.GetInt32(15);
         var notes = reader.IsDBNull(22) ? string.Empty : reader.GetString(22).Trim();
-        var appearance = reader.IsDBNull(23) ? string.Empty : reader.GetString(23).Trim();
-        var totalTours = reader.IsDBNull(24) ? 0 : reader.GetInt32(24);
-        var whtType = reader.IsDBNull(25) ? "Resident" : reader.GetString(25).Trim();
-        var whtTax = reader.IsDBNull(26) ? 10.21m : reader.GetDecimal(26);
+        var taxCode = reader.IsDBNull(23) ? string.Empty : reader.GetString(23).Trim();
+        var bankName = reader.IsDBNull(24) ? string.Empty : reader.GetString(24).Trim();
+        var bankAccountNumber = reader.IsDBNull(25) ? string.Empty : reader.GetString(25).Trim();
+        var bankAccountName = reader.IsDBNull(26) ? string.Empty : reader.GetString(26).Trim();
+        var appearance = reader.IsDBNull(27) ? string.Empty : reader.GetString(27).Trim();
+        var totalTours = reader.IsDBNull(28) ? 0 : reader.GetInt32(28);
+        var whtType = reader.IsDBNull(29) ? "Resident" : reader.GetString(29).Trim();
+        var whtTax = reader.IsDBNull(30) ? 10.21m : reader.GetDecimal(30);
 
         var bio = new List<string>();
         AddIfHasValue(bio, reader.IsDBNull(18) ? string.Empty : reader.GetString(18));
@@ -181,6 +189,10 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
             YearsExperience = CalculateYearsExperience(startDateWithUs?.ToDateTime(TimeOnly.MinValue)),
             Appearance = appearance,
             Notes = notes,
+            TaxCode = taxCode,
+            BankName = bankName,
+            BankAccountNumber = bankAccountNumber,
+            BankAccountName = bankAccountName,
             Tags = ParseAppearanceTags(appearance, exactCode),
             Languages = languages,
             Certifications = BuildCertifications(licenseName),
@@ -213,6 +225,10 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 ExactCode,
                 Appearance,
                 Notes,
+                TaxCode,
+                BankName,
+                BankAccountNumber,
+                BankAccountName,
                 CountryXid,
                 CountryName,
                 Aboutme,
@@ -242,6 +258,10 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 @ExactCode,
                 @Appearance,
                 @Notes,
+                @TaxCode,
+                @BankName,
+                @BankAccountNumber,
+                @BankAccountName,
                 @CountryXid,
                 @CountryName,
                 @Aboutme,
@@ -289,6 +309,10 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
                 ExactCode = @ExactCode,
                 Appearance = @Appearance,
                 Notes = @Notes,
+                TaxCode = @TaxCode,
+                BankName = @BankName,
+                BankAccountNumber = @BankAccountNumber,
+                BankAccountName = @BankAccountName,
                 CountryXid = @CountryXid,
                 CountryName = @CountryName,
                 Aboutme = @Aboutme,
@@ -453,6 +477,10 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
         command.Parameters.AddWithValue("@ExactCode", request.Tags.FirstOrDefault() ?? string.Empty);
         command.Parameters.AddWithValue("@Appearance", request.Appearance.Trim());
         command.Parameters.AddWithValue("@Notes", request.Notes.Trim());
+        command.Parameters.AddWithValue("@TaxCode", request.TaxCode.Trim());
+        command.Parameters.AddWithValue("@BankName", request.BankName.Trim());
+        command.Parameters.AddWithValue("@BankAccountNumber", request.BankAccountNumber.Trim());
+        command.Parameters.AddWithValue("@BankAccountName", request.BankAccountName.Trim());
         command.Parameters.AddWithValue("@CountryXid", DBNull.Value);
         command.Parameters.AddWithValue("@CountryName", request.Country.Trim());
         command.Parameters.AddWithValue("@Aboutme", request.Bio.FirstOrDefault() ?? string.Empty);

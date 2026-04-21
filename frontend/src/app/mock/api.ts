@@ -65,6 +65,11 @@ type ApiGuideDetail = {
   averageRating: number;
   yearsExperience: number;
   appearance?: string;
+  notes?: string;
+  taxCode?: string;
+  bankName?: string;
+  bankAccountNumber?: string;
+  bankAccountName?: string;
   tags: string[];
   languages: ApiGuideLanguage[];
   certifications: ApiGuideCertification[];
@@ -348,6 +353,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const getWhtTaxByType = (type: WhtType) => (type === "Resident" ? 10.21 : 20.42);
 export const buildGuideEmailKey = (bookingId: string, guideId: number) => `${bookingId}-${guideId}`;
+const mapGuideRank = (value: number) => {
+  switch (value) {
+    case 0:
+      return "S";
+    case 1:
+      return "A";
+    case 2:
+      return "B";
+    case 3:
+      return "C";
+    case 4:
+      return "D";
+    case 5:
+      return "E";
+    default:
+      return "";
+  }
+};
 
 const mapGuideProfile = (guide: ApiGuideDetail): GuideProfileData => ({
   id: guide.id,
@@ -374,10 +397,14 @@ const mapGuideProfile = (guide: ApiGuideDetail): GuideProfileData => ({
   })),
   tourRecord: guide.tourRecord ?? "",
   notes: guide.notes ?? "",
+  taxCode: guide.taxCode ?? "",
+  bankName: guide.bankName ?? "",
+  bankAccountNumber: guide.bankAccountNumber ?? "",
+  bankAccountName: guide.bankAccountName ?? "",
   stats: {
     totalTours: guide.historicalTours ?? 0,
     avgRating: Number(guide.averageRating ?? 0),
-    yearsExp: `${guide.yearsExperience ?? 0}+`,
+    yearsExp: mapGuideRank(Number(guide.rating ?? 0)),
   },
   bio: guide.bio?.length ? guide.bio : ["Guide profile synced from backend."],
   upcomingTours: [],
@@ -397,6 +424,10 @@ const mapGuideFormData = (guide?: ApiGuideDetail | null): GuideFormData => ({
   startDateWithUs: guide?.startDateWithUs ?? "",
   tourRecord: guide?.tourRecord ?? "",
   notes: guide?.notes ?? "",
+  taxCode: guide?.taxCode ?? "",
+  bankName: guide?.bankName ?? "",
+  bankAccountNumber: guide?.bankAccountNumber ?? "",
+  bankAccountName: guide?.bankAccountName ?? "",
   whtType: ensureWhtType(guide?.whtType ?? "Resident"),
   whtTax: Number(guide?.whtTax ?? getWhtTaxByType("Resident")),
   status: ensureGuideStatus(guide?.status ?? "Active"),
@@ -617,6 +648,10 @@ export const mockApi = {
       whtTax: Number(formData.whtTax),
       tourRecord: formData.tourRecord.trim(),
       notes: formData.notes.trim(),
+      taxCode: formData.taxCode.trim(),
+      bankName: formData.bankName.trim(),
+      bankAccountNumber: formData.bankAccountNumber.trim(),
+      bankAccountName: formData.bankAccountName.trim(),
       licenseName: formData.licenseName.trim(),
       startDateWithUs: formData.startDateWithUs || null,
       historicalTours: 0,
