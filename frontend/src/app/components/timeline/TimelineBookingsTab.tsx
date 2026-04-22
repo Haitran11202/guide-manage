@@ -356,11 +356,11 @@ export function TimelineBookingsTab({
                               <td className="px-6 py-3 align-top">{getStatusBadge(booking.status)}</td>
                               <td className="px-6 py-3 align-top">
                                 <div className="flex flex-col gap-2">
-                                  {booking.assignedGuides.length === 0 ? (
+                                  {(booking.assignedGuides.length === 0 && Object.keys(booking.guideStatuses ?? {}).length === 0) ? (
                                     <span className="text-[#1D3663]/45 font-bold text-xs italic">Not Assigned</span>
                                   ) : (
-                                    booking.assignedGuides.map((guideName) => {
-                                      const isConfirmed = booking.confirmedGuides?.includes(guideName);
+                                    (booking.assignedGuides.length > 0 ? booking.assignedGuides : Object.keys(booking.guideStatuses ?? {})).map((guideName) => {
+                                      const isConfirmed = (booking.guideStatuses?.[guideName] ?? 1) === 2;
 
                                       return (
                                         <div key={guideName} className="flex items-center gap-4">
@@ -392,7 +392,7 @@ export function TimelineBookingsTab({
                                                 isConfirmed ? "text-[#1D3663]" : "text-[#F3796A] group-hover:text-[#F3796A]/80"
                                               }`}
                                             >
-                                              {isConfirmed ? "ACCEPTED" : "WAITING"}
+                                              {isConfirmed ? "CONFIRM" : "WAITING"}
                                             </span>
                                           </div>
                                         </div>

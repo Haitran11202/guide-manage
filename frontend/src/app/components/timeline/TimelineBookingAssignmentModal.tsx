@@ -220,7 +220,8 @@ export function TimelineBookingAssignmentModal({
           ) : (
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
               {activeAssignmentBooking.assignedGuides.map((guideName: string) => {
-                const isConfirmed = activeAssignmentBooking.confirmedGuides?.includes(guideName);
+                const guideAssignStatus = activeAssignmentBooking.guideStatuses?.[guideName] ?? 1;
+                const isConfirmed = guideAssignStatus === 2;
                 const guide = guidesData.find((item) => item.name === guideName);
                 const emailRecord = guide ? emailRecords[buildGuideEmailKey(activeAssignmentBooking.id, guide.id)] : null;
                 const activeDocumentKey = activeDocumentStatus[guideName] ?? null;
@@ -267,7 +268,7 @@ export function TimelineBookingAssignmentModal({
                                   : "border-[#F3796A]/30 bg-[#F3796A]/10 text-[#F3796A]"
                                 }`}
                             >
-                              {isConfirmed ? "Accepted" : "Waiting"}
+                              {isConfirmed ? "Confirm" : "Waiting"}
                             </span>
                           </button>
 

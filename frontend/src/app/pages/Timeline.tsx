@@ -39,6 +39,7 @@ type Booking = {
   status: string;
   assignedGuides: string[];
   confirmedGuides: string[];
+  guideStatuses: Record<string, number>;
   country?: string;
   managerDays?: BookingManagerDay[];
 };
@@ -107,6 +108,12 @@ const formatHourRange = (startHour: number, endHour: number) => `${formatHour(st
 const toDateKey = (value: Date) => value.toISOString().split("T")[0];
 
 const getBookingSeriesName = (booking: { series?: string | null }) => booking.series?.trim() || "NO SERIES";
+
+const getGuideAssignStatus = (booking: { guideStatuses?: Record<string, number> }, guideName: string) =>
+  booking.guideStatuses?.[guideName] ?? 1;
+
+const isGuideConfirmed = (booking: { guideStatuses?: Record<string, number> }, guideName: string) =>
+  getGuideAssignStatus(booking, guideName) === 2;
 
 const getDynamicallyCalculatedStatus = (guide: any, targetIntervals: { start: number, end: number }[], itemAssignments: Record<string, number>) => {
   for (const b of guide.busyDates) {
@@ -318,6 +325,48 @@ export function Timeline() {
     setItemTimeSlots((current) => ({ ...current, ...data.itemTimeSlots }));
   };
 
+  const buildBookingManagerView = (booking: Booking, bookingManagerData: BookingManagerData): Booking => {
+    const guideNameById = new Map(guidesData.map((guide) => [guide.id, guide.name]));
+    const assignedGuides = Array.from(
+      new Set(
+        Object.values(bookingManagerData.itemAssignments)
+          .map((guideId) => guideNameById.get(guideId))
+          .filter((guideName): guideName is string => Boolean(guideName)),
+      ),
+    ).sort((left, right) => left.localeCompare(right));
+
+    const guideStatuses = Object.fromEntries(
+      Object.entries(bookingManagerData.guideStatuses ?? {})
+        .map(([guideId, status]) => {
+          const guideName = guideNameById.get(Number(guideId));
+          return guideName ? [guideName, status] : null;
+        })
+        .filter((entry): entry is [string, number] => entry !== null),
+    );
+
+    return {
+      ...booking,
+      assignedGuides,
+      confirmedGuides: assignedGuides.filter((guideName) => guideStatuses[guideName] === 2),
+      guideStatuses,
+      managerDays: bookingManagerData.days,
+    };
+  };
+
+  const refreshActiveBookingManager = async (booking: Booking) => {
+    const bookingManagerData = await runTimelineApi("Loading booking services...", () =>
+      mockApi.getBookingManagerData(booking.ref),
+    false,
+    );
+
+    mergeBookingManagerSupportData(bookingManagerData);
+    const updatedBooking = buildBookingManagerView(booking, bookingManagerData);
+    setBookingsData((current) =>
+      current.map((item) => (item.id === updatedBooking.id ? { ...item, ...updatedBooking } : item)),
+    );
+    return updatedBooking;
+  };
+
   const [pendingGuideStatusChange, setPendingGuideStatusChange] = useState<PendingGuideStatusChange>(null);
   const [emailComposerState, setEmailComposerState] = useState<EmailComposerState>(null);
 
@@ -375,6 +424,9 @@ export function Timeline() {
       ...currentBooking,
       assignedGuides,
       confirmedGuides: (currentBooking.confirmedGuides ?? []).filter((guideName) => assignedGuides.includes(guideName)),
+      guideStatuses: Object.fromEntries(
+        Object.entries(currentBooking.guideStatuses ?? {}).filter(([guideName]) => assignedGuides.includes(guideName)),
+      ),
     };
   };
 
@@ -998,11 +1050,12 @@ export function Timeline() {
 
   const handleConfirmUnassignGuide = async () => {
     if (!activeAssignmentBooking || !pendingUnassignGuide) return;
-    const nextTimelineData = await runTimelineApi("Unassigning guide...", () =>
+    await runTimelineApi("Unassigning guide...", () =>
       mockApi.unassignGuideFromBooking(activeAssignmentBooking.id, pendingUnassignGuide),
     );
-    const updatedBooking = syncBookingManagerMutation(nextTimelineData, activeAssignmentBooking);
+    const updatedBooking = await refreshActiveBookingManager(activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
+    setBookingManagerDirty(true);
     setPendingUnassignGuide(null); setShowUnassignDialog(false);
   };
 
@@ -1192,22 +1245,15 @@ export function Timeline() {
   const handleOpenBookingManager = async (booking: any) => {
     const requestId = bookingManagerRequestRef.current + 1;
     bookingManagerRequestRef.current = requestId;
-    const latestBooking = await fetchLatestBookingForManager(bookingsData.find((item) => item.id === booking.id) ?? booking);
+    const selectedBooking = bookingsData.find((item) => item.id === booking.id) ?? booking;
     if (bookingManagerRequestRef.current !== requestId) {
       return;
     }
-    const bookingManagerData = await runTimelineApi("Loading booking services...", () =>
-      mockApi.getBookingManagerData(latestBooking.ref),
-    false,
-    );
+    const bookingWithManager = await refreshActiveBookingManager(selectedBooking);
     if (bookingManagerRequestRef.current !== requestId) {
       return;
     }
-    mergeBookingManagerSupportData(bookingManagerData);
-    setActiveAssignmentBooking({
-      ...latestBooking,
-      managerDays: bookingManagerData.days,
-    });
+    setActiveAssignmentBooking(bookingWithManager);
     setBookingManagerDirty(false);
     setSelectedItemsToAssign(new Set());
     setShowGuideSelector(false);
@@ -1344,11 +1390,14 @@ export function Timeline() {
 
   const handleUnassignSelectedItems = async () => {
     if (!activeAssignmentBooking || selectedItemsToAssign.size === 0) return;
-    const nextTimelineData = await runTimelineApi("Unassigning selected items...", () =>
-      mockApi.unassignBookingItems(activeAssignmentBooking.id, Array.from(selectedItemsToAssign)),
+    await runTimelineApi("Unassigning selected items...", () =>
+      mockApi.unassignBookingItems(
+        Array.from(selectedItemsToAssign).map((itemId) => Number(itemId)).filter((itemId) => Number.isInteger(itemId) && itemId > 0),
+      ),
     );
-    const updatedBooking = syncBookingManagerMutation(nextTimelineData, activeAssignmentBooking);
+    const updatedBooking = await refreshActiveBookingManager(activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
+    setBookingManagerDirty(true);
     setSelectedItemsToAssign(new Set());
     setSelectedGuideId(null);
     setShowGuideSelector(false);
@@ -1478,14 +1527,11 @@ export function Timeline() {
       entries.push({ date: draft.date, startHour, endHour });
     }
 
-    let nextTimelineData;
-
     if (guideTimingModalState.mode === "select-assignment") {
       await runTimelineApi("Assigning guide with timing...", () =>
         mockApi.assignBookingItems(
-          activeAssignmentBooking.id,
           guideTimingModalState.guideId,
-          Array.from(selectedItemsToAssign),
+          Array.from(selectedItemsToAssign).map((itemId) => Number(itemId)).filter((itemId) => Number.isInteger(itemId) && itemId > 0),
         ),
       );
       nextTimelineData = await runTimelineApi("Saving timing exceptions...", () =>
@@ -1499,7 +1545,7 @@ export function Timeline() {
       setSelectedItemsToAssign(new Set());
       setSelectedGuideId(null);
     } else {
-      nextTimelineData = await runTimelineApi("Saving timing exceptions...", () =>
+      await runTimelineApi("Saving timing exceptions...", () =>
         mockApi.setGuideBookingTimeExceptions(
           guideTimingModalState.bookingId,
           guideTimingModalState.guideId,
@@ -1508,29 +1554,24 @@ export function Timeline() {
       );
     }
 
-    const updatedBooking =
-      guideTimingModalState.mode === "select-assignment"
-        ? syncBookingManagerMutation(nextTimelineData, activeAssignmentBooking)
-        : (() => {
-            applyTimelineData(nextTimelineData);
-            return resolveActiveAssignmentBooking(nextTimelineData, activeAssignmentBooking);
-          })();
+    const updatedBooking = await refreshActiveBookingManager(activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
+    setBookingManagerDirty(true);
     setGuideTimingModalState(null);
   };
 
   const handleConfirmAssignment = async () => {
     if (!activeAssignmentBooking || !selectedGuideId) return;
 
-    const nextTimelineData = await runTimelineApi("Assigning guide...", () =>
+    await runTimelineApi("Assigning guide...", () =>
       mockApi.assignBookingItems(
-        activeAssignmentBooking.id,
         selectedGuideId,
-        Array.from(selectedItemsToAssign),
+        Array.from(selectedItemsToAssign).map((itemId) => Number(itemId)).filter((itemId) => Number.isInteger(itemId) && itemId > 0),
       ),
     );
-    const updatedBooking = syncBookingManagerMutation(nextTimelineData, activeAssignmentBooking);
+    const updatedBooking = await refreshActiveBookingManager(activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
+    setBookingManagerDirty(true);
     setShowGuideSelector(false);
     setSelectedItemsToAssign(new Set());
     setSelectedGuideId(null);
@@ -1796,7 +1837,7 @@ export function Timeline() {
 
                           events.push({
                             type: "tour", start: startStr, duration: (eDay - sDay + 1), data: t,
-                            guideStatus: t.confirmedGuides?.includes(guide.name) ? "confirmed" : "requested",
+                            guideStatus: isGuideConfirmed(t, guide.name) ? "confirmed" : "requested",
                             isCancelled: t.status?.toLowerCase() === "cancelled"
                           });
                         };
@@ -1815,7 +1856,7 @@ export function Timeline() {
                     } else {
                       events.push({
                         type: "tour", start: t.startDay, duration: t.duration, data: t,
-                        guideStatus: t.confirmedGuides?.includes(guide.name) ? "confirmed" : "requested",
+                        guideStatus: isGuideConfirmed(t, guide.name) ? "confirmed" : "requested",
                         isCancelled: t.status?.toLowerCase() === "cancelled"
                       });
                     }
@@ -2070,10 +2111,10 @@ export function Timeline() {
                             </div>
                             {!isCancelled && (
                               <div
-                                className={`text-[9px] font-black uppercase tracking-widest ${t.confirmedGuides?.includes(detailsGuide.name) ? "text-[#1D3663]" : "text-[#F3796A]"
+                                className={`text-[9px] font-black uppercase tracking-widest ${isGuideConfirmed(t, detailsGuide.name) ? "text-[#1D3663]" : "text-[#F3796A]"
                                   }`}
                               >
-                                {t.confirmedGuides?.includes(detailsGuide.name) ? "Accepted" : "Waiting"}
+                                {isGuideConfirmed(t, detailsGuide.name) ? "Confirm" : "Waiting"}
                               </div>
                             )}
                             <button
@@ -2187,7 +2228,7 @@ export function Timeline() {
               <h4 className="text-base font-black text-[#1D3663]">Confirm guide status</h4>
               <p className="text-sm text-[#1D3663]/65 mt-2 font-medium">
                 Change <strong>{pendingGuideStatusChange.guideName}</strong> to{" "}
-                <strong>{pendingGuideStatusChange.isConfirmed ? "Waiting" : "Accepted"}</strong> for this booking?
+                <strong>{pendingGuideStatusChange.isConfirmed ? "Waiting" : "Confirm"}</strong> for this booking?
               </p>
             </div>
             <div className="flex gap-3">

@@ -495,18 +495,6 @@ export function AddEditGuide() {
                     className="w-full mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40"
                   />
                 </div> */}
-                <div className="col-span-2">
-                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
-                    Notes
-                  </label>
-                  <textarea
-                    rows={4}
-                    value={formData.notes}
-                    onChange={(event) => updateField("notes", event.target.value)}
-                    placeholder="Enter guide notes..."
-                    className="w-full mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40"
-                  />
-                </div>
 
                 <div className="bg-white border border-[#C4E8FF] p-4 rounded-xl">
                   <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest block">
@@ -639,7 +627,7 @@ export function AddEditGuide() {
                   Press `Enter` to create a tag. You can also paste multiple tags separated by commas.
                 </p>
               </div>
-              <div className="flex-[6] min-h-0">
+              <div className="flex-[4] min-h-0">
                 <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
                   Biography
                 </label>
@@ -650,6 +638,18 @@ export function AddEditGuide() {
                   placeholder="Enter the guide biography..."
                   className="w-full h-[calc(100%-1.5rem)] mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40 resize-none"
                 />
+              </div>
+              <div className="flex-[4] min-h-0">
+                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                    Notes
+                  </label>
+                  <textarea
+                    rows={8}
+                    value={formData.notes}
+                    onChange={(event) => updateField("notes", event.target.value)}
+                    placeholder="Enter guide notes..."
+                    className="w-full mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40"
+                  />
               </div>
             </section>
           </div>

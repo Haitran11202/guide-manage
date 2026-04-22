@@ -14,4 +14,5 @@ public sealed class TimelineBookingDto
     public string? Country { get; init; }
     public IReadOnlyList<string> AssignedGuides { get; init; } = [];
     public IReadOnlyList<string> ConfirmedGuides { get; init; } = [];
+    public IReadOnlyDictionary<string, int> GuideStatuses { get; init; } = new Dictionary<string, int>();
 }

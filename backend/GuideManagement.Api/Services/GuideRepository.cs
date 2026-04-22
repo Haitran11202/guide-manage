@@ -193,7 +193,7 @@ public sealed class GuideRepository(ISqlConnectionFactory connectionFactory) : I
             BankName = bankName,
             BankAccountNumber = bankAccountNumber,
             BankAccountName = bankAccountName,
-            Tags = ParseAppearanceTags(appearance, exactCode),
+            Tags = ParseAppearanceTags(appearance, string.Empty),
             Languages = languages,
             Certifications = BuildCertifications(licenseName),
             Bio = bio

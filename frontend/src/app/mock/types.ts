@@ -194,6 +194,7 @@ export type TimelineBooking = {
   status: string;
   assignedGuides: string[];
   confirmedGuides: string[];
+  guideStatuses: Record<string, number>;
   country?: string;
 };
 
@@ -230,6 +231,24 @@ export type BookingManagerData = {
   days: BookingManagerDay[];
   itemAssignments: Record<string, number>;
   itemTimeSlots: Record<string, ServiceDayPart>;
+  guideStatuses: Record<string, number>;
+};
+
+export type AssignGuideToServiceRequest = {
+  resHolidayXid: number;
+  supplierGuideXid: number;
+  operatorNote?: string;
+  assignedBy: number;
+};
+
+export type AssignGuideToServiceResponse = {
+  pid: number;
+  resHolidayXid: number;
+  supplierGuideXid: number;
+  assignStatus: number;
+  assignedBy: number;
+  assignedDateUtc: string;
+  operatorNote: string;
 };
 
 export type TimelineData = {

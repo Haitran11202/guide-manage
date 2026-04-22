@@ -61,6 +61,7 @@ public sealed class TimelineRepository(
 
         var assignedGuideIdsByBooking = new Dictionary<string, HashSet<int>>(StringComparer.OrdinalIgnoreCase);
         var confirmedGuideIdsByBooking = new Dictionary<string, HashSet<int>>(StringComparer.OrdinalIgnoreCase);
+        var guideStatusesByBooking = new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
         var emailRecords = new Dictionary<string, GuideEmailRecordDto>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var relation in relations)
@@ -73,7 +74,15 @@ public sealed class TimelineRepository(
 
             assignedGuideIds.Add(relation.GuideId);
 
-            if (relation.IsConfirmed)
+            if (!guideStatusesByBooking.TryGetValue(relation.BookingId, out var bookingGuideStatuses))
+            {
+                bookingGuideStatuses = [];
+                guideStatusesByBooking[relation.BookingId] = bookingGuideStatuses;
+            }
+
+            bookingGuideStatuses[relation.GuideId] = relation.AssignStatus;
+
+            if (relation.AssignStatus == 2)
             {
                 if (!confirmedGuideIdsByBooking.TryGetValue(relation.BookingId, out var confirmedGuideIds))
                 {
@@ -90,7 +99,7 @@ public sealed class TimelineRepository(
                 {
                     BookingId = relation.BookingId,
                     GuideId = relation.GuideId,
-                    Status = relation.IsConfirmed ? "sent" : "draft",
+                    Status = relation.AssignStatus == 2 ? "sent" : "draft",
                     Date = relation.MessageDate,
                     Subject = string.Empty,
                     Body = relation.Message
@@ -116,6 +125,17 @@ public sealed class TimelineRepository(
                 var confirmedGuideIds = confirmedGuideIdsByBooking.TryGetValue(booking.Id, out var confirmed)
                     ? confirmed.Where(assignedGuideIds.Contains).ToHashSet()
                     : [];
+                var guideStatuses = guideStatusesByBooking.TryGetValue(booking.Id, out var bookingStatuses)
+                    ? bookingStatuses
+                        .Where(entry => assignedGuideIds.Contains(entry.Key))
+                        .Select(entry => new
+                        {
+                            GuideName = guideNameById.TryGetValue(entry.Key, out var guideName) ? guideName : string.Empty,
+                            entry.Value
+                        })
+                        .Where(entry => !string.IsNullOrWhiteSpace(entry.GuideName))
+                        .ToDictionary(entry => entry.GuideName, entry => entry.Value)
+                    : new Dictionary<string, int>();
 
                 return new TimelineBookingDto
                 {
@@ -138,7 +158,8 @@ public sealed class TimelineRepository(
                         .Select(guideId => guideNameById.TryGetValue(guideId, out var guideName) ? guideName : string.Empty)
                         .Where(value => !string.IsNullOrWhiteSpace(value))
                         .OrderBy(value => value)
-                        .ToArray()
+                        .ToArray(),
+                    GuideStatuses = guideStatuses
                 };
             })
             .Where(booking => MatchesBookingFilters(booking, search, client, country, guide, series))
@@ -242,13 +263,14 @@ public sealed class TimelineRepository(
             ON target.ResHolidayXid = source.ResHolidayXid AND target.SupplierGuideXid = source.SupplierGuideXid
             WHEN MATCHED THEN
                 UPDATE SET
+                    AssignStatus = @AssignStatus,
                     SendSMS = @SendSMS,
                     SendSMSDate = @SendSMSDate,
                     LastEdit = GETDATE(),
                     LastEditByXid = 0
             WHEN NOT MATCHED THEN
-                INSERT (SupplierGuideXid, ResHolidayXid, Dated, SendSMS, SendSMSDate, LastEdit, LastEditByXid)
-                VALUES (source.SupplierGuideXid, source.ResHolidayXid, GETDATE(), @SendSMS, @SendSMSDate, GETDATE(), 0);
+                INSERT (SupplierGuideXid, ResHolidayXid, Dated, SendSMS, SendSMSDate, LastEdit, LastEditByXid, AssignStatus)
+                VALUES (source.SupplierGuideXid, source.ResHolidayXid, GETDATE(), @SendSMS, @SendSMSDate, GETDATE(), 0, @AssignStatus);
             """;
 
         await using var connection = connectionFactory.CreateConnection();
@@ -260,6 +282,7 @@ public sealed class TimelineRepository(
                 {
                     BookingPid = bookingPid,
                     GuideId = guideId.Value,
+                    AssignStatus = request.Confirmed ? 2 : 1,
                     SendSMS = request.Confirmed ? "Y" : "N",
                     SendSMSDate = request.Confirmed ? (DateTime?)DateTime.UtcNow : null
                 },
@@ -321,17 +344,23 @@ public sealed class TimelineRepository(
 
     public async Task<TimelineDataDto> AssignBookingItemsAsync(AssignBookingItemsRequest request, CancellationToken cancellationToken)
     {
-        bookingManagementState.ItemManagedBookingIds[request.BookingId] = 1;
+        var resHolidayIds = request.ResHolidayIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
 
-        foreach (var itemId in request.ItemIds.Where(itemId => itemId.StartsWith($"{request.BookingId}-", StringComparison.OrdinalIgnoreCase)))
+        if (resHolidayIds.Length == 0)
         {
-            bookingManagementState.ItemAssignmentOverrides[itemId] = request.GuideId;
-            bookingManagementState.ItemTimeSlotOverrides.TryAdd(itemId, "full-day");
+            return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         }
 
-        if (int.TryParse(request.BookingId, out var bookingPid))
+        await InsertGuideAssignmentsAsync(resHolidayIds, request.GuideId, cancellationToken);
+
+        foreach (var resHolidayId in resHolidayIds)
         {
-            await EnsureGuideRelationAsync(bookingPid, request.GuideId, cancellationToken);
+            var itemId = resHolidayId.ToString();
+            bookingManagementState.ItemAssignmentOverrides[itemId] = request.GuideId;
+            bookingManagementState.ItemTimeSlotOverrides.TryAdd(itemId, "full-day");
         }
 
         return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
@@ -339,11 +368,9 @@ public sealed class TimelineRepository(
 
     public async Task<TimelineDataDto> UnassignBookingItemsAsync(UnassignBookingItemsRequest request, CancellationToken cancellationToken)
     {
-        bookingManagementState.ItemManagedBookingIds[request.BookingId] = 1;
-
-        foreach (var itemId in request.ItemIds.Where(itemId => itemId.StartsWith($"{request.BookingId}-", StringComparison.OrdinalIgnoreCase)))
+        foreach (var resHolidayId in request.ResHolidayIds.Where(id => id > 0).Distinct())
         {
-            bookingManagementState.ItemAssignmentOverrides[itemId] = 0;
+            bookingManagementState.ItemAssignmentOverrides[resHolidayId.ToString()] = 0;
         }
 
         return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
@@ -360,31 +387,55 @@ public sealed class TimelineRepository(
             return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         }
 
-        const string deleteRelationSql = """
-            DELETE FROM dbo.Res_HolidayGuide
-            WHERE ResHolidayXid = @BookingPid AND SupplierGuideXid = @GuideId;
-            """;
+        const string sql = """
+            DECLARE @ResXid int;
+            SELECT TOP (1) @ResXid = rh.ResXid
+            FROM dbo.Res_Holidays rh
+            WHERE rh.Pid = @BookingPid;
 
-        const string resetPrimarySql = """
-            UPDATE dbo.Res_Holidays
-            SET GuideXid = NULL
-            WHERE Pid = @BookingPid AND GuideXid = @GuideId;
+            IF @ResXid IS NULL
+            BEGIN
+                RETURN;
+            END;
+
+            ;WITH CurrentAssignments AS
+            (
+                SELECT
+                    rh.Pid AS ResHolidayXid,
+                    COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS CurrentGuideId
+                FROM dbo.Res_Holidays rh
+                OUTER APPLY
+                (
+                    SELECT TOP (1)
+                        hg.SupplierGuideXid
+                    FROM dbo.Res_HolidayGuide hg
+                    WHERE hg.ResHolidayXid = rh.Pid
+                      AND hg.SupplierGuideXid IS NOT NULL
+                    ORDER BY hg.Pid DESC
+                ) latestGuide
+                WHERE rh.ResXid = @ResXid
+            )
+            DELETE hg
+            FROM dbo.Res_HolidayGuide hg
+            INNER JOIN CurrentAssignments currentAssignment
+                ON currentAssignment.ResHolidayXid = hg.ResHolidayXid
+            WHERE currentAssignment.CurrentGuideId = @GuideId
+              AND hg.SupplierGuideXid = @GuideId;
+
+            UPDATE rh
+            SET rh.GuideXid = NULL
+            FROM dbo.Res_Holidays rh
+            INNER JOIN CurrentAssignments currentAssignment
+                ON currentAssignment.ResHolidayXid = rh.Pid
+            WHERE currentAssignment.CurrentGuideId = @GuideId
+              AND rh.GuideXid = @GuideId;
             """;
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await connection.ExecuteAsync(
             new CommandDefinition(
-                deleteRelationSql,
-                new
-                {
-                    BookingPid = bookingPid,
-                    GuideId = guideId.Value
-                },
-                cancellationToken: cancellationToken));
-        await connection.ExecuteAsync(
-            new CommandDefinition(
-                resetPrimarySql,
+                sql,
                 new
                 {
                     BookingPid = bookingPid,
@@ -584,33 +635,33 @@ public sealed class TimelineRepository(
         CancellationToken cancellationToken)
     {
         const string sql = """
+            WITH LatestHolidayGuide AS
+            (
+                SELECT
+                    hg.ResHolidayXid,
+                    hg.SupplierGuideXid,
+                    hg.SendSMS,
+                    hg.Message,
+                    hg.SendSMSDate,
+                    ISNULL(hg.AssignStatus, CASE WHEN hg.SendSMS = 'Y' THEN 2 ELSE 1 END) AS AssignStatus,
+                    ROW_NUMBER() OVER (PARTITION BY hg.ResHolidayXid ORDER BY hg.Pid DESC) AS RowNum
+                FROM dbo.Res_HolidayGuide hg
+                WHERE hg.SupplierGuideXid IS NOT NULL
+                  AND hg.ResHolidayXid IS NOT NULL
+            )
             SELECT
                 CAST(rh.Pid AS varchar(20)) AS BookingId,
-                rh.GuideXid AS GuideId,
-                CAST(NULL AS char(1)) AS SendSMS,
-                CAST(NULL AS nvarchar(MAX)) AS Message,
-                CAST(NULL AS datetime) AS SendSMSDate
+                COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS GuideId,
+                latestGuide.SendSMS,
+                latestGuide.Message,
+                latestGuide.SendSMSDate,
+                COALESCE(latestGuide.AssignStatus, CASE WHEN rh.GuideXid IS NOT NULL THEN 2 ELSE 1 END) AS AssignStatus
             FROM dbo.Res_Holidays rh
-            INNER JOIN dbo.M_SupplierGuide g ON g.Pid = rh.GuideXid
-            WHERE rh.GuideXid IS NOT NULL
-              AND (@CountryXid IS NULL OR g.CountryXid = @CountryXid)
-              AND rh.ArrDate IS NOT NULL
-              AND rh.ArrDate <= @RangeEnd
-              AND DATEADD(day, CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END, rh.ArrDate) >= @RangeStart
-
-            UNION ALL
-
-            SELECT
-                CAST(hg.ResHolidayXid AS varchar(20)) AS BookingId,
-                hg.SupplierGuideXid AS GuideId,
-                hg.SendSMS,
-                hg.Message,
-                hg.SendSMSDate
-            FROM dbo.Res_HolidayGuide hg
-            INNER JOIN dbo.Res_Holidays rh ON rh.Pid = hg.ResHolidayXid
-            INNER JOIN dbo.M_SupplierGuide g ON g.Pid = hg.SupplierGuideXid
-            WHERE hg.SupplierGuideXid IS NOT NULL
-              AND hg.ResHolidayXid IS NOT NULL
+            LEFT JOIN LatestHolidayGuide latestGuide
+                ON latestGuide.ResHolidayXid = rh.Pid
+               AND latestGuide.RowNum = 1
+            INNER JOIN dbo.M_SupplierGuide g ON g.Pid = COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid)
+            WHERE COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) IS NOT NULL
               AND (@CountryXid IS NULL OR g.CountryXid = @CountryXid)
               AND rh.ArrDate IS NOT NULL
               AND rh.ArrDate <= @RangeEnd
@@ -633,7 +684,7 @@ public sealed class TimelineRepository(
         return rows.Select(row => new GuideRelation(
             row.BookingId,
             row.GuideId,
-            row.IsConfirmed,
+            row.AssignStatus,
             row.Message ?? string.Empty,
             row.MessageDate)).ToArray();
     }
@@ -822,28 +873,39 @@ public sealed class TimelineRepository(
                 cancellationToken: cancellationToken));
     }
 
-    private async Task EnsureGuideRelationAsync(int bookingPid, int guideId, CancellationToken cancellationToken)
+    private async Task InsertGuideAssignmentsAsync(IReadOnlyCollection<int> resHolidayIds, int guideId, CancellationToken cancellationToken)
     {
         const string sql = """
-            MERGE dbo.Res_HolidayGuide AS target
-            USING (SELECT @BookingPid AS ResHolidayXid, @GuideId AS SupplierGuideXid) AS source
-            ON target.ResHolidayXid = source.ResHolidayXid AND target.SupplierGuideXid = source.SupplierGuideXid
-            WHEN NOT MATCHED THEN
-                INSERT (SupplierGuideXid, ResHolidayXid, Dated, SendSMS, LastEdit, LastEditByXid)
-                VALUES (source.SupplierGuideXid, source.ResHolidayXid, GETDATE(), 'N', GETDATE(), 0);
+            INSERT INTO dbo.Res_HolidayGuide
+            (
+                SupplierGuideXid,
+                ResHolidayXid,
+                AssignStatus
+            )
+            VALUES
+            (
+                @GuideId,
+                @ResHolidayXid,
+                @AssignStatus
+            );
             """;
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await connection.ExecuteAsync(
-            new CommandDefinition(
-                sql,
-                new
-                {
-                    BookingPid = bookingPid,
-                    GuideId = guideId
-                },
-                cancellationToken: cancellationToken));
+
+        foreach (var resHolidayId in resHolidayIds)
+        {
+            await connection.ExecuteAsync(
+                new CommandDefinition(
+                    sql,
+                    new
+                    {
+                        GuideId = guideId,
+                        ResHolidayXid = resHolidayId,
+                        AssignStatus = 1
+                    },
+                    cancellationToken: cancellationToken));
+        }
     }
 
     private async Task<int?> GetGuideIdByNameAsync(string guideName, CancellationToken cancellationToken)
@@ -985,9 +1047,9 @@ public sealed class TimelineRepository(
         int GuideId,
         string? SendSMS,
         string? Message,
-        DateTime? SendSMSDate)
+        DateTime? SendSMSDate,
+        int AssignStatus)
     {
-        public bool IsConfirmed => TimelineRepository.IsConfirmed(SendSMS);
         public DateOnly? MessageDate => SendSMSDate is null ? null : DateOnly.FromDateTime(SendSMSDate.Value);
     }
 
@@ -996,7 +1058,7 @@ public sealed class TimelineRepository(
     private sealed record GuideRelation(
         string BookingId,
         int GuideId,
-        bool IsConfirmed,
+        int AssignStatus,
         string Message,
         DateOnly? MessageDate);
 

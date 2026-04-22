@@ -1,4 +1,6 @@
 import type {
+  AssignGuideToServiceRequest,
+  AssignGuideToServiceResponse,
   BookingManagerData,
   CityOption,
   CountryOption,
@@ -105,6 +107,16 @@ type ApiBusyDate = {
   to?: string | null;
 };
 
+type ApiAssignGuideToServiceResponse = {
+  pid: number;
+  resHolidayXid: number;
+  supplierGuideXid: number;
+  assignStatus: number;
+  assignedBy: number;
+  assignedDateUtc: string;
+  operatorNote: string;
+};
+
 type ApiTimelineGuide = {
   id: number;
   name: string;
@@ -126,6 +138,7 @@ type ApiTimelineBooking = {
   country?: string | null;
   assignedGuides: string[];
   confirmedGuides: string[];
+  guideStatuses?: Record<string, number>;
 };
 
 type ApiTimelineData = {
@@ -191,6 +204,7 @@ type ApiBookingsBooking = {
   country?: string | null;
   assignedGuides: string[];
   confirmedGuides: string[];
+  guideStatuses?: Record<string, number>;
 };
 
 type ApiBookingsData = {
@@ -222,6 +236,7 @@ type ApiBookingManagerData = {
   }>;
   itemAssignments: Record<string, number>;
   itemTimeSlots: Record<string, string>;
+  guideStatuses?: Record<string, number>;
 };
 
 type TimelineQuery = {
@@ -454,6 +469,7 @@ const mapTimelineData = (data: ApiTimelineData): TimelineData => ({
     country: booking.country ?? undefined,
     assignedGuides: booking.assignedGuides ?? [],
     confirmedGuides: booking.confirmedGuides ?? [],
+    guideStatuses: booking.guideStatuses ?? {},
   })),
   bookingSeries: mergeBookingSeries(data.bookingSeries ?? []),
   guidesData: (data.guidesData ?? []).map((guide) => ({
@@ -513,6 +529,7 @@ const mapBookingsData = (data: ApiBookingsData): TimelineData => ({
     country: booking.country ?? undefined,
     assignedGuides: booking.assignedGuides ?? [],
     confirmedGuides: booking.confirmedGuides ?? [],
+    guideStatuses: booking.guideStatuses ?? {},
   })),
   bookingSeries: mergeBookingSeries(data.bookingSeries ?? []),
   guidesData: (data.guidesData ?? []).map((guide) => ({
@@ -571,6 +588,19 @@ const mapBookingManagerData = (data: ApiBookingManagerData): BookingManagerData 
   itemTimeSlots: Object.fromEntries(
     Object.entries(data.itemTimeSlots ?? {}).map(([itemId, slot]) => [itemId, ensureServiceDayPart(slot)]),
   ),
+  guideStatuses: data.guideStatuses ?? {},
+});
+
+const mapAssignGuideToServiceResponse = (
+  assignment: ApiAssignGuideToServiceResponse,
+): AssignGuideToServiceResponse => ({
+  pid: assignment.pid,
+  resHolidayXid: assignment.resHolidayXid,
+  supplierGuideXid: assignment.supplierGuideXid,
+  assignStatus: assignment.assignStatus,
+  assignedBy: assignment.assignedBy,
+  assignedDateUtc: assignment.assignedDateUtc,
+  operatorNote: assignment.operatorNote ?? "",
 });
 
 export const mockApi = {
@@ -724,6 +754,20 @@ export const mockApi = {
     return mapBookingManagerData(data);
   },
 
+  async assignGuideToService(payload: AssignGuideToServiceRequest): Promise<AssignGuideToServiceResponse> {
+    const assignment = await request<ApiAssignGuideToServiceResponse>("/api/service-guide-assignments", {
+      method: "POST",
+      body: JSON.stringify({
+        resHolidayXid: payload.resHolidayXid,
+        supplierGuideXid: payload.supplierGuideXid,
+        operatorNote: payload.operatorNote ?? "",
+        assignedBy: payload.assignedBy,
+      }),
+    });
+
+    return mapAssignGuideToServiceResponse(assignment);
+  },
+
   async setBookingGuideConfirmation(bookingId: string, guideName: string, confirmed: boolean): Promise<TimelineData> {
     const timeline = await request<ApiTimelineData>("/api/timeline/booking-guide-confirmation", {
       method: "POST",
@@ -755,18 +799,18 @@ export const mockApi = {
     return mapTimelineData(timeline);
   },
 
-  async assignBookingItems(bookingId: string, guideId: number, itemIds: string[]): Promise<TimelineData> {
+  async assignBookingItems(guideId: number, resHolidayIds: number[]): Promise<TimelineData> {
     const timeline = await request<ApiTimelineData>("/api/timeline/assign-booking-items", {
       method: "POST",
-      body: JSON.stringify({ bookingId, guideId, itemIds }),
+      body: JSON.stringify({ guideId, resHolidayIds }),
     });
     return mapTimelineData(timeline);
   },
 
-  async unassignBookingItems(bookingId: string, itemIds: string[]): Promise<TimelineData> {
+  async unassignBookingItems(resHolidayIds: number[]): Promise<TimelineData> {
     const timeline = await request<ApiTimelineData>("/api/timeline/unassign-booking-items", {
       method: "POST",
-      body: JSON.stringify({ bookingId, itemIds }),
+      body: JSON.stringify({ resHolidayIds }),
     });
     return mapTimelineData(timeline);
   },

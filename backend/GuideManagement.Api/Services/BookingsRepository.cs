@@ -63,7 +63,6 @@ public sealed class BookingsRepository(
             return new BookingManagerDataDto();
         }
 
-        var bookingId = bookingRow.BookingId.ToString();
         var startDay = DateOnly.FromDateTime(bookingRow.StartDay.Value);
 
         // 1. Gom nhóm dịch vụ theo ngày (ArrDate của Res_Holiday) trước
@@ -85,7 +84,7 @@ public sealed class BookingsRepository(
             var items = serviceDay
                 .Select(row => new BookingManagerItemDto
                 {
-                    Id = $"{bookingId}-d{dayNum}-svc{row.ServicePid}",
+                    Id = row.ServicePid!.Value.ToString(),
                     Type = BuildManagerServiceLabel(row.ServiceName)
                 })
                 .DistinctBy(item => item.Id)
@@ -100,8 +99,22 @@ public sealed class BookingsRepository(
             });
         }
 
-        var assignedGuideIds = await GetGuideIdsForBookingAsync(bookingRow.BookingId, cancellationToken);
-        var itemAssignments = BuildManagerItemAssignments(managerItemIds, assignedGuideIds);
+        var serviceIds = rows
+            .Where(row => row.ServicePid.HasValue)
+            .Select(row => row.ServicePid!.Value)
+            .Distinct()
+            .ToArray();
+        var serviceAssignments = await GetGuideAssignmentsForServicesAsync(serviceIds, cancellationToken);
+        var itemAssignments = serviceAssignments.ToDictionary(
+            row => row.ServicePid.ToString(),
+            row => row.GuideId,
+            StringComparer.OrdinalIgnoreCase);
+        var guideStatuses = serviceAssignments
+            .GroupBy(row => row.GuideId)
+            .ToDictionary(
+                group => group.Key.ToString(),
+                group => group.Max(row => row.AssignStatus),
+                StringComparer.OrdinalIgnoreCase);
         ApplyManagerItemAssignmentOverrides(itemAssignments, managerItemIds);
         var itemTimeSlots = BuildManagerItemTimeSlots(managerItemIds);
 
@@ -109,7 +122,8 @@ public sealed class BookingsRepository(
         {
             Days = days,
             ItemAssignments = itemAssignments,
-            ItemTimeSlots = itemTimeSlots
+            ItemTimeSlots = itemTimeSlots,
+            GuideStatuses = guideStatuses
         };
     }
 
@@ -131,6 +145,7 @@ public sealed class BookingsRepository(
 
         var assignedGuideIdsByBooking = new Dictionary<string, HashSet<int>>(StringComparer.OrdinalIgnoreCase);
         var confirmedGuideIdsByBooking = new Dictionary<string, HashSet<int>>(StringComparer.OrdinalIgnoreCase);
+        var guideStatusesByBooking = new Dictionary<string, Dictionary<int, int>>(StringComparer.OrdinalIgnoreCase);
         var emailRecords = new Dictionary<string, BookingsGuideEmailRecordDto>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var relation in relations)
@@ -143,7 +158,15 @@ public sealed class BookingsRepository(
 
             assignedGuideIds.Add(relation.GuideId);
 
-            if (relation.IsConfirmed)
+            if (!guideStatusesByBooking.TryGetValue(relation.BookingId, out var bookingGuideStatuses))
+            {
+                bookingGuideStatuses = [];
+                guideStatusesByBooking[relation.BookingId] = bookingGuideStatuses;
+            }
+
+            bookingGuideStatuses[relation.GuideId] = relation.AssignStatus;
+
+            if (relation.AssignStatus == 2)
             {
                 if (!confirmedGuideIdsByBooking.TryGetValue(relation.BookingId, out var confirmedGuideIds))
                 {
@@ -160,7 +183,7 @@ public sealed class BookingsRepository(
                 {
                     BookingId = relation.BookingId,
                     GuideId = relation.GuideId,
-                    Status = relation.IsConfirmed ? "sent" : "draft",
+                    Status = relation.AssignStatus == 2 ? "sent" : "draft",
                     Date = relation.MessageDate,
                     Subject = string.Empty,
                     Body = relation.Message
@@ -177,10 +200,23 @@ public sealed class BookingsRepository(
         var filteredBookings = bookings
             .Select(booking =>
             {
-                var assignedGuideIds = GetAssignedGuideIdsForBooking(itemAssignments, booking.Id).ToHashSet();
+                var assignedGuideIds = assignedGuideIdsByBooking.TryGetValue(booking.Id, out var assigned)
+                    ? assigned
+                    : [];
                 var confirmedGuideIds = confirmedGuideIdsByBooking.TryGetValue(booking.Id, out var confirmed)
                     ? confirmed.Where(assignedGuideIds.Contains).ToHashSet()
                     : [];
+                var guideStatuses = guideStatusesByBooking.TryGetValue(booking.Id, out var bookingStatuses)
+                    ? bookingStatuses
+                        .Where(entry => assignedGuideIds.Contains(entry.Key))
+                        .Select(entry => new
+                        {
+                            GuideName = guideNameById.TryGetValue(entry.Key, out var guideName) ? guideName : string.Empty,
+                            entry.Value
+                        })
+                        .Where(entry => !string.IsNullOrWhiteSpace(entry.GuideName))
+                        .ToDictionary(entry => entry.GuideName, entry => entry.Value)
+                    : new Dictionary<string, int>();
 
                 return new BookingsBookingDto
                 {
@@ -202,7 +238,8 @@ public sealed class BookingsRepository(
                         .Select(guideId => guideNameById.TryGetValue(guideId, out var guideName) ? guideName : string.Empty)
                         .Where(value => !string.IsNullOrWhiteSpace(value))
                         .OrderBy(value => value)
-                        .ToArray()
+                        .ToArray(),
+                    GuideStatuses = guideStatuses
                 };
             })
             .Where(booking => MatchesBookingFilters(booking, search, client, country, guide, series))
@@ -426,13 +463,31 @@ ORDER BY res.ArrDate, res.Pid;";
         CancellationToken cancellationToken)
     {
         const string sql = """
+            WITH LatestHolidayGuide AS
+            (
+                SELECT
+                    hg.ResHolidayXid,
+                    hg.SupplierGuideXid,
+                    hg.SendSMS,
+                    hg.Message,
+                    hg.SendSMSDate,
+                    ISNULL(hg.AssignStatus, CASE WHEN hg.SendSMS = 'Y' THEN 2 ELSE 1 END) AS AssignStatus,
+                    ROW_NUMBER() OVER (PARTITION BY hg.ResHolidayXid ORDER BY hg.Pid DESC) AS RowNum
+                FROM dbo.Res_HolidayGuide hg
+                WHERE hg.SupplierGuideXid IS NOT NULL
+                  AND hg.ResHolidayXid IS NOT NULL
+            )
             SELECT
                 CAST(packageRh.Pid AS varchar(20)) AS BookingId,
-                rh.GuideXid AS GuideId,
-                CAST(NULL AS char(1)) AS SendSMS,
-                CAST(NULL AS nvarchar(MAX)) AS Message,
-                CAST(NULL AS datetime) AS SendSMSDate
+                COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS GuideId,
+                latestGuide.SendSMS,
+                latestGuide.Message,
+                latestGuide.SendSMSDate,
+                COALESCE(latestGuide.AssignStatus, CASE WHEN rh.GuideXid IS NOT NULL THEN 2 ELSE 1 END) AS AssignStatus
             FROM dbo.Res_Holidays rh
+            LEFT JOIN LatestHolidayGuide latestGuide
+                ON latestGuide.ResHolidayXid = rh.Pid
+               AND latestGuide.RowNum = 1
             INNER JOIN dbo.Res res ON res.Pid = rh.ResXid
             CROSS APPLY (
                 SELECT TOP (1)
@@ -445,32 +500,7 @@ ORDER BY res.ArrDate, res.Pid;";
                   AND DATEADD(day, CASE WHEN ISNULL(pkg.NoOfNights, 1) < 1 THEN 1 ELSE pkg.NoOfNights END, pkg.ArrDate) >= @RangeStart
                 ORDER BY pkg.NoOfNights DESC, pkg.Pid DESC
             ) packageRh
-            WHERE rh.GuideXid IS NOT NULL
-
-            UNION ALL
-
-            SELECT
-                CAST(packageRh.Pid AS varchar(20)) AS BookingId,
-                hg.SupplierGuideXid AS GuideId,
-                hg.SendSMS,
-                hg.Message,
-                hg.SendSMSDate
-            FROM dbo.Res_HolidayGuide hg
-            INNER JOIN dbo.Res_Holidays rh ON rh.Pid = hg.ResHolidayXid
-            INNER JOIN dbo.Res res ON res.Pid = rh.ResXid
-            CROSS APPLY (
-                SELECT TOP (1)
-                    pkg.Pid
-                FROM dbo.Res_Holidays pkg
-                WHERE pkg.ResXid = res.Pid
-                  AND pkg.ElementType = 'P'
-                  AND pkg.ArrDate IS NOT NULL
-                  AND pkg.ArrDate <= @RangeEnd
-                  AND DATEADD(day, CASE WHEN ISNULL(pkg.NoOfNights, 1) < 1 THEN 1 ELSE pkg.NoOfNights END, pkg.ArrDate) >= @RangeStart
-                ORDER BY pkg.NoOfNights DESC, pkg.Pid DESC
-            ) packageRh
-            WHERE hg.SupplierGuideXid IS NOT NULL
-              AND hg.ResHolidayXid IS NOT NULL;
+            WHERE COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) IS NOT NULL;
             """;
 
         await using var connection = connectionFactory.CreateConnection();
@@ -487,34 +517,41 @@ ORDER BY res.ArrDate, res.Pid;";
         return rows.ToArray();
     }
 
-    private async Task<IReadOnlyList<int>> GetGuideIdsForBookingAsync(int bookingPid, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<ServiceGuideAssignmentRow>> GetGuideAssignmentsForServicesAsync(
+        IReadOnlyCollection<int> serviceIds,
+        CancellationToken cancellationToken)
     {
+        if (serviceIds.Count == 0)
+        {
+            return [];
+        }
+
         const string sql = """
-            SELECT DISTINCT GuideId
-            FROM
+            SELECT
+                rh.Pid AS ServicePid,
+                COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS GuideId,
+                COALESCE(latestGuide.AssignStatus, CASE WHEN rh.GuideXid IS NOT NULL THEN 2 END, 1) AS AssignStatus
+            FROM dbo.Res_Holidays rh
+            OUTER APPLY
             (
-                SELECT rh.GuideXid AS GuideId
-                FROM dbo.Res_Holidays rh
-                WHERE rh.Pid = @BookingPid
-                  AND rh.GuideXid IS NOT NULL
-
-                UNION ALL
-
-                SELECT hg.SupplierGuideXid AS GuideId
+                SELECT TOP (1)
+                    hg.SupplierGuideXid,
+                    ISNULL(hg.AssignStatus, CASE WHEN hg.SendSMS = 'Y' THEN 2 ELSE 1 END) AS AssignStatus
                 FROM dbo.Res_HolidayGuide hg
-                WHERE hg.ResHolidayXid = @BookingPid
+                WHERE hg.ResHolidayXid = rh.Pid
                   AND hg.SupplierGuideXid IS NOT NULL
-            ) source
-            WHERE GuideId IS NOT NULL
-            ORDER BY GuideId;
+                ORDER BY hg.Pid DESC
+            ) latestGuide
+            WHERE rh.Pid IN @ServiceIds
+              AND COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) IS NOT NULL;
             """;
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        var rows = await connection.QueryAsync<int>(
+        var rows = await connection.QueryAsync<ServiceGuideAssignmentRow>(
             new CommandDefinition(
                 sql,
-                new { BookingPid = bookingPid },
+                new { ServiceIds = serviceIds.ToArray() },
                 cancellationToken: cancellationToken));
         return rows.ToArray();
     }
@@ -563,25 +600,6 @@ ORDER BY res.ArrDate, res.Pid;";
                 var assignedGuideId = orderedGuideIds[index % orderedGuideIds.Length];
                 result[itemIds[index]] = assignedGuideId;
             }
-        }
-
-        return result;
-    }
-
-    private static Dictionary<string, int> BuildManagerItemAssignments(
-        IReadOnlyList<string> itemIds,
-        IReadOnlyList<int> guideIds)
-    {
-        var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        if (itemIds.Count == 0 || guideIds.Count == 0)
-        {
-            return result;
-        }
-
-        var orderedGuideIds = guideIds.OrderBy(value => value).ToArray();
-        for (var index = 0; index < itemIds.Count; index += 1)
-        {
-            result[itemIds[index]] = orderedGuideIds[index % orderedGuideIds.Length];
         }
 
         return result;
@@ -829,11 +847,13 @@ ORDER BY res.ArrDate, res.Pid;";
         int GuideId,
         string? SendSMS,
         string? Message,
-        DateTime? SendSMSDate)
+        DateTime? SendSMSDate,
+        int AssignStatus)
     {
-        public bool IsConfirmed => BookingsRepository.IsConfirmed(SendSMS);
         public DateOnly? MessageDate => SendSMSDate is null ? null : DateOnly.FromDateTime(SendSMSDate.Value);
     }
+
+    private sealed record ServiceGuideAssignmentRow(int ServicePid, int GuideId, int AssignStatus);
 
     private sealed record BookingManagerRow(
         int BookingId,
