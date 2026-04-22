@@ -261,30 +261,32 @@ export function AddEditGuide() {
         <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 items-stretch xl:grid-cols-12 gap-6 pb-20">
           <div className="xl:col-span-7 space-y-6">
             <section className="bg-white rounded-2xl p-6 shadow-sm border border-[#C4E8FF]">
-              <h3 className="font-black text-[#1D3663] text-sm uppercase tracking-tight flex items-center gap-2 mb-6 border-b border-[#C4E8FF]/50 pb-3">
-                <User className="w-4 h-4 text-[#F3796A]" /> Basic Identity
-              </h3>
-              <div className="grid grid-cols-2 gap-x-5 gap-y-4">
-                <div className="col-span-2 flex justify-end">
-                  <div className="w-full max-w-[260px] bg-[#C4E8FF]/20 p-1.5 rounded-xl flex gap-1 h-fit my-auto border border-[#C4E8FF]">
-                    <button
-                      type="button"
-                      onClick={() => updateField("status", "Active")}
-                      className={`flex-1 py-1.5 text-[9px] font-black rounded-lg uppercase tracking-widest shadow-sm ${formData.status === "Active" ? "bg-[#1D3663] text-white" : "text-[#1D3663]/55"
-                        }`}
-                    >
-                      ACTIVE
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => updateField("status", "Inactive")}
-                      className={`flex-1 py-1.5 text-[9px] font-black rounded-lg uppercase tracking-widest ${formData.status === "Inactive" ? "bg-[#1D3663] text-white shadow-sm" : "text-[#1D3663]/55"
-                        }`}
-                    >
-                      INACTIVE
-                    </button>
-                  </div>
+              <div className="mb-6 flex flex-col gap-3 border-b border-[#C4E8FF]/50 pb-3 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="font-black text-[#1D3663] text-sm uppercase tracking-tight flex items-center gap-2">
+                  <User className="w-4 h-4 text-[#F3796A]" /> Basic Identity
+                </h3>
+                <div className="w-full bg-[#C4E8FF]/20 p-1.5 rounded-xl flex gap-1 border border-[#C4E8FF] sm:h-fit sm:w-auto sm:min-w-[260px]">
+                  <button
+                    type="button"
+                    onClick={() => updateField("status", "Active")}
+                    className={`flex-1 py-1.5 text-[9px] font-black rounded-lg uppercase tracking-widest shadow-sm ${
+                      formData.status === "Active" ? "bg-[#1D3663] text-white" : "text-[#1D3663]/55"
+                    }`}
+                  >
+                    ACTIVE
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateField("status", "Inactive")}
+                    className={`flex-1 py-1.5 text-[9px] font-black rounded-lg uppercase tracking-widest ${
+                      formData.status === "Inactive" ? "bg-[#1D3663] text-white shadow-sm" : "text-[#1D3663]/55"
+                    }`}
+                  >
+                    INACTIVE
+                  </button>
                 </div>
+              </div>
+              <div className="grid grid-cols-2 gap-x-5 gap-y-4">
                 <div className="col-span-2">
                   <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
                     Full Name
@@ -427,18 +429,7 @@ export function AddEditGuide() {
                   />
                 </div>
 
-                <div className="col-span-2">
-                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
-                    Notes
-                  </label>
-                  <textarea
-                    rows={4}
-                    value={formData.notes}
-                    onChange={(event) => updateField("notes", event.target.value)}
-                    placeholder="Enter guide notes..."
-                    className="w-full mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40"
-                  />
-                </div>
+                
 
                 <div className="col-span-2">
                   <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
@@ -504,6 +495,18 @@ export function AddEditGuide() {
                     className="w-full mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40"
                   />
                 </div> */}
+                <div className="col-span-2">
+                  <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">
+                    Notes
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={formData.notes}
+                    onChange={(event) => updateField("notes", event.target.value)}
+                    placeholder="Enter guide notes..."
+                    className="w-full mt-1 px-4 py-3 bg-white border border-[#C4E8FF] rounded-xl text-xs font-medium focus:ring-1 focus:ring-[#F3796A] outline-none placeholder:text-[#1D3663]/40"
+                  />
+                </div>
 
                 <div className="bg-white border border-[#C4E8FF] p-4 rounded-xl">
                   <label className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest block">

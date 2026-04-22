@@ -10,7 +10,7 @@ Thumbs.db
 *.log
 *.out
 *.err
-
+artifacts/verify-build/
 # Frontend
 frontend/node_modules/
 frontend/dist/

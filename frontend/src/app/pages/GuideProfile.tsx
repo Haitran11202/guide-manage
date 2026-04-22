@@ -3,7 +3,6 @@ import { useParams, Link } from "react-router";
 import { Star, Mail, Phone, Calendar, MapPin } from "lucide-react";
 import { ImageWithFallback } from "../components/figma/ImageWithFallback";
 import { LoadingOverlay } from "../components/ui/LoadingOverlay";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { mockApi } from "../mock/api";
 import type { GuideProfileData } from "../mock/types";
 
@@ -235,17 +234,14 @@ export function GuideProfile() {
                 </div>
               </section>
 
-              <Tabs defaultValue="overview" className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] p-6">
-                <TabsList className="bg-[#C4E8FF]/20 p-1 rounded-2xl">
-                  <TabsTrigger value="overview" className="text-[#1D3663] font-black uppercase tracking-widest text-[10px]">
+              <section className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] p-6">
+                <div className="inline-flex rounded-2xl bg-[#C4E8FF]/20 p-1">
+                  <div className="rounded-xl bg-white px-4 py-2 text-[10px] font-black uppercase tracking-widest text-[#1D3663] shadow-sm">
                     Overview
-                  </TabsTrigger>
-                  <TabsTrigger value="final-info" className="text-[#1D3663] font-black uppercase tracking-widest text-[10px]">
-                    Final Info
-                  </TabsTrigger>
-                </TabsList>
+                  </div>
+                </div>
 
-                <TabsContent value="overview" className="pt-4 space-y-8">
+                <div className="pt-4 space-y-8">
                   <section className="bg-white rounded-2xl border border-[#C4E8FF] p-8">
                     <h3 className="text-base font-black text-[#1D3663] uppercase tracking-tight mb-4">
                       About {guideData.name.split(" ")[0]}
@@ -267,12 +263,10 @@ export function GuideProfile() {
                       {guideData.notes || "N/A"}
                     </p>
                   </section>
-                </TabsContent>
 
-                <TabsContent value="final-info" className="pt-4">
                   <section className="bg-white rounded-2xl border border-[#C4E8FF] p-8">
                     <h3 className="text-base font-black text-[#1D3663] uppercase tracking-tight mb-6">
-                      Final Info
+                      Financial
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="rounded-2xl border border-[#C4E8FF] bg-[#C4E8FF]/10 p-4">
@@ -293,8 +287,8 @@ export function GuideProfile() {
                       </div>
                     </div>
                   </section>
-                </TabsContent>
-              </Tabs>
+                </div>
+              </section>
 
               {/* <section className="bg-white rounded-2xl shadow-sm border border-[#C4E8FF] overflow-hidden">
                 <div className="px-6 py-4 border-b border-[#C4E8FF] flex justify-between items-center bg-[#C4E8FF]/10">
