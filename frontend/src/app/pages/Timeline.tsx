@@ -1525,7 +1525,6 @@ export function Timeline() {
   };
 
   const handleRequestGuideStatusChange = (bookingId: string, guideName: string, isConfirmed: boolean) => {
-    if (isConfirmed) return;
     const booking = bookingsData.find((item) => item.id === bookingId);
     if (!booking) return;
     setPendingGuideStatusChange({
@@ -1538,24 +1537,34 @@ export function Timeline() {
 
   const handleConfirmGuideStatusChange = async () => {
     if (!pendingGuideStatusChange) return;
-    const guideId = guidesData.find((guide) => guide.name === pendingGuideStatusChange.guideName)?.id;
-    if (!guideId || !activeAssignmentBooking) return;
+    const { bookingId, guideName, isConfirmed } = pendingGuideStatusChange;
 
-    const serviceIds = dailyColumns
-      .flatMap((day: any) => day.items)
-      .filter((item: any) => itemAssignments[item.id] === guideId)
-      .map((item: any) => Number(item.id))
-      .filter((serviceId) => Number.isInteger(serviceId) && serviceId > 0);
+    // Use the direct API that works regardless of whether booking manager is open
+    await runTimelineApi("Updating guide status...", () =>
+      mockApi.setBookingGuideConfirmation(bookingId, guideName, !isConfirmed),
+    );
 
-    await runTimelineApi("Updating guide status...", async () => {
-      for (const serviceId of serviceIds) {
-        await mockApi.confirmServiceGuide(serviceId);
+    // Optimistically update local state so the UI reflects the change immediately
+    setBookingsData((current) =>
+      current.map((booking) => {
+        if (booking.id !== bookingId) return booking;
+        const nextStatus = !isConfirmed ? 2 : 1;
+        return {
+          ...booking,
+          guideStatuses: { ...booking.guideStatuses, [guideName]: nextStatus },
+          confirmedGuides: !isConfirmed
+            ? [...(booking.confirmedGuides ?? []).filter((n) => n !== guideName), guideName]
+            : (booking.confirmedGuides ?? []).filter((n) => n !== guideName),
+        };
+      }),
+    );
+
+    // If the booking manager is also open for this booking, refresh it too
+    if (activeAssignmentBooking?.id === bookingId) {
+      const updatedBooking = await refreshTimelineAndBookingManager(activeAssignmentBooking);
+      if (updatedBooking) {
+        setActiveAssignmentBooking(updatedBooking);
       }
-    });
-
-    const updatedBooking = await refreshTimelineAndBookingManager(activeAssignmentBooking);
-    if (updatedBooking) {
-      setActiveAssignmentBooking(updatedBooking);
     }
 
     setPendingGuideStatusChange(null);
@@ -2562,14 +2571,14 @@ export function Timeline() {
                   ) : (
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 pb-10">
                       {busyDatesInYear.map((b: any) => (
-                        <div key={b.id} className="flex items-center justify-between bg-red-50/80 px-4 py-3 rounded-2xl border border-red-200 shadow-sm hover:shadow transition-shadow">
+                        <div key={b.id} className="flex items-center justify-between bg-purple-50/50 px-4 py-3 rounded-2xl border border-purple-200 shadow-sm hover:shadow transition-shadow">
                           <div className="flex items-center gap-3">
-                            <div className="w-2 h-2 rounded-full bg-violet-500"></div>
-                            <span className="text-xs font-black text-red-700">
-                              {b.from} <span className="text-red-400 mx-1">-</span> {b.to}
+                            <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                            <span className="text-xs font-black text-purple-700">
+                              {b.from} <span className="text-purple-400 mx-1">-</span> {b.to}
                             </span>
                           </div>
-                          <button onClick={() => handleRemoveBusyDate(b.id, detailsGuide.id)} className="text-red-500 hover:bg-red-200 p-2 rounded-xl transition-colors" title="Remove block">
+                          <button onClick={() => handleRemoveBusyDate(b.id, detailsGuide.id)} className="text-purple-500 hover:bg-purple-200 p-2 rounded-xl transition-colors" title="Remove block">
                             <X className="w-4 h-4" />
                           </button>
                         </div>
@@ -2618,9 +2627,14 @@ export function Timeline() {
               <AlertCircle className="w-6 h-6 text-[#F3796A]" />
             </div>
             <div>
-              <h4 className="text-base font-black text-[#1D3663]">Confirm guide status</h4>
+              <h4 className="text-base font-black text-[#1D3663]">
+                {pendingGuideStatusChange.isConfirmed ? "Remove Confirmation" : "Confirm Guide"}
+              </h4>
               <p className="text-sm text-[#1D3663]/65 mt-2 font-medium">
-                Confirm <strong>{pendingGuideStatusChange.guideName}</strong> for all selected services in this booking?
+                {pendingGuideStatusChange.isConfirmed
+                  ? <>Remove confirmation for <strong>{pendingGuideStatusChange.guideName}</strong>?</>
+                  : <>Confirm <strong>{pendingGuideStatusChange.guideName}</strong> for this booking?</>
+                }
               </p>
             </div>
             <div className="flex gap-3">
@@ -2632,9 +2646,9 @@ export function Timeline() {
               </button>
               <button
                 onClick={handleConfirmGuideStatusChange}
-                className="flex-1 py-3 bg-[#F3796A] hover:brightness-95 text-white font-black rounded-xl transition-colors"
+                className={`flex-1 py-3 font-black rounded-xl transition-colors text-white ${pendingGuideStatusChange.isConfirmed ? "bg-[#1D3663] hover:brightness-95" : "bg-[#F3796A] hover:brightness-95"}`}
               >
-                Confirm
+                {pendingGuideStatusChange.isConfirmed ? "Remove" : "Confirm"}
               </button>
             </div>
           </div>
