@@ -731,12 +731,12 @@ export function Timeline() {
     if (isCancelledEvent(event)) return "bg-white border border-[#1D3663]/20";
     const resStatus = (event.data?.status ?? "").toLowerCase();
     if (resStatus === "confirmed" || resStatus === "paid" || resStatus === "book" || resStatus === "booked") {
-      return "bg-[#1D3663]";
+      return "bg-[#1D3663] border border-[#0d1f40]";
     }
     if (resStatus === "requested" || resStatus === "on request") {
-      return "bg-[#F3796A]";
+      return "bg-[#F3796A] border border-[#c45a3b]";
     }
-    return "bg-[#F3796A]"; // default
+    return "bg-[#F3796A] border border-[#c45a3b]"; // default
   };
 
   const calendarRange = useMemo(() => {
