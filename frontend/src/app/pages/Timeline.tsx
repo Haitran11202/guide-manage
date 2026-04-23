@@ -729,7 +729,14 @@ export function Timeline() {
   const getEventBarClasses = (event: any) => {
     if (event.type === "busy") return "bg-violet-500 border border-slate-600 text-white";
     if (isCancelledEvent(event)) return "bg-white border border-[#1D3663]/20";
-    return event.guideStatus === "confirmed" ? "bg-[#1D3663]" : "bg-[#F3796A]";
+    const resStatus = (event.data?.status ?? "").toLowerCase();
+    if (resStatus === "confirmed" || resStatus === "paid" || resStatus === "book" || resStatus === "booked") {
+      return "bg-[#1D3663]";
+    }
+    if (resStatus === "requested" || resStatus === "on request") {
+      return "bg-[#F3796A]";
+    }
+    return "bg-[#F3796A]"; // default
   };
 
   const calendarRange = useMemo(() => {
