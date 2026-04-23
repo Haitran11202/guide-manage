@@ -1177,21 +1177,11 @@ export function Timeline() {
     }
     if (overlappingTour) { alert(`The guide is already on tour for "${overlappingTour.groupName}" on some of those dates. You cannot add a busy block.`); return; }
 
-    const busyDatesToCreate: string[] = [];
-    const cursor = new Date(`${newBusyFrom}T00:00:00`);
-    const end = new Date(`${newBusyTo}T00:00:00`);
-    while (cursor.getTime() <= end.getTime()) {
-      busyDatesToCreate.push(toDateKey(cursor));
-      cursor.setDate(cursor.getDate() + 1);
-    }
+    const nextTimelineData = await runTimelineApi("Saving busy dates...", () =>
+      mockApi.addGuideBusyDate(guideDetailsModalId, newBusyFrom, newBusyTo, newBusyShiftCode),
+    );
+    applyTimelineData(nextTimelineData);
 
-    await runTimelineApi("Saving busy dates...", async () => {
-      for (const date of busyDatesToCreate) {
-        await mockApi.markGuidePersonalBusy(guideDetailsModalId, date, newBusyShiftCode);
-      }
-    });
-
-    await fetchTimelineData();
     setNewBusyFrom("");
     setNewBusyTo("");
     setNewBusyShiftCode("ALL");

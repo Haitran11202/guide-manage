@@ -909,10 +909,10 @@ export const mockApi = {
     return mapTimelineData(timeline);
   },
 
-  async addGuideBusyDate(guideId: number, from: string, to: string): Promise<TimelineData> {
+  async addGuideBusyDate(guideId: number, from: string, to: string, shift: ShiftCode): Promise<TimelineData> {
     const timeline = await request<ApiTimelineData>("/api/timeline/guide-busy-dates", {
       method: "POST",
-      body: JSON.stringify({ guideId, from, to }),
+      body: JSON.stringify({ guideId, from, to, shift }),
     });
     return mapTimelineData(timeline);
   },

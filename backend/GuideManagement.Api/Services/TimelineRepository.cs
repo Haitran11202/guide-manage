@@ -331,16 +331,44 @@ public sealed class TimelineRepository(
 
     public async Task<TimelineDataDto> AddGuideBusyDateAsync(GuideBusyDateRequest request, CancellationToken cancellationToken)
     {
-        if (!request.From.HasValue || !request.To.HasValue)
+        if (request.GuideId <= 0 || !request.From.HasValue || !request.To.HasValue)
         {
             return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         }
 
-        var currentDate = request.From.Value;
-        while (currentDate <= request.To.Value)
+        var fromDate = request.From.Value <= request.To.Value ? request.From.Value : request.To.Value;
+        var toDate = request.From.Value <= request.To.Value ? request.To.Value : request.From.Value;
+        var shift = NormalizeShiftCode(request.Shift);
+        var shiftCodes = ExpandShiftCodes(shift).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
+        await using var connection = connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        var shiftColumnSql = await GetGuideBusyShiftColumnSqlAsync(connection, null, cancellationToken);
+        if (shiftColumnSql is null)
         {
-            await InsertBusyDateAsync(request.GuideId, currentDate, cancellationToken);
-            currentDate = currentDate.AddDays(1);
+            throw new InvalidOperationException("M_GuideBusy is missing the Shift column. Apply the latest SQL script before saving busy dates.");
+        }
+
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            await BulkInsertPersonalBusyDatesAsync(
+                connection,
+                transaction,
+                shiftColumnSql,
+                request.GuideId,
+                fromDate,
+                toDate,
+                shiftCodes,
+                cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
         }
 
         return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
@@ -1368,6 +1396,70 @@ public sealed class TimelineRepository(
                     Date = date.ToDateTime(TimeOnly.MinValue)
                 },
                 cancellationToken: cancellationToken));
+    }
+
+    private static async Task BulkInsertPersonalBusyDatesAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        string shiftColumnSql,
+        int guideId,
+        DateOnly fromDate,
+        DateOnly toDate,
+        IReadOnlyList<string> shiftCodes,
+        CancellationToken cancellationToken)
+    {
+        if (shiftCodes.Count == 0)
+        {
+            return;
+        }
+
+        var shiftValuesSql = string.Join(", ", shiftCodes.Select((_, index) => $"(@Shift{index})"));
+        await using var command = new SqlCommand(
+            $"""
+            ;WITH DateRange AS
+            (
+                SELECT CAST(@FromDate AS date) AS BusyDate
+                UNION ALL
+                SELECT DATEADD(day, 1, BusyDate)
+                FROM DateRange
+                WHERE BusyDate < CAST(@ToDate AS date)
+            ),
+            ShiftRange AS
+            (
+                SELECT ShiftCode
+                FROM (VALUES {shiftValuesSql}) AS shifts(ShiftCode)
+            )
+            INSERT INTO dbo.M_GuideBusy
+            (
+                SupplierGuideXid,
+                [Date],
+                {shiftColumnSql},
+                Busy,
+                ResHolidayXid
+            )
+            SELECT
+                @GuideId,
+                dateRange.BusyDate,
+                shiftRange.ShiftCode,
+                'B',
+                NULL
+            FROM DateRange dateRange
+            CROSS JOIN ShiftRange shiftRange
+            OPTION (MAXRECURSION 0);
+            """,
+            connection,
+            transaction);
+
+        command.Parameters.Add("@GuideId", System.Data.SqlDbType.Int).Value = guideId;
+        command.Parameters.Add("@FromDate", System.Data.SqlDbType.Date).Value = fromDate.ToDateTime(TimeOnly.MinValue).Date;
+        command.Parameters.Add("@ToDate", System.Data.SqlDbType.Date).Value = toDate.ToDateTime(TimeOnly.MinValue).Date;
+
+        for (var index = 0; index < shiftCodes.Count; index += 1)
+        {
+            command.Parameters.Add($"@Shift{index}", System.Data.SqlDbType.VarChar, 10).Value = shiftCodes[index];
+        }
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task InsertGuideAssignmentsAsync(IReadOnlyCollection<int> resHolidayIds, int guideId, CancellationToken cancellationToken)
