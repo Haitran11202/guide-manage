@@ -122,20 +122,40 @@ const formatHour = (value: number) => `${value.toString().padStart(2, "0")}:00`;
 
 const formatHourRange = (startHour: number, endHour: number) => `${formatHour(startHour)} - ${formatHour(endHour)}`;
 
-const toDateKey = (value: Date) => value.toISOString().split("T")[0];
+const toDateKey = (value: Date) => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 const getBookingSeriesName = (booking: { series?: string | null }) => booking.series?.trim() || "NO SERIES";
 
 const extractResCodeFromBooking = (booking: { groupName?: string | null; ref?: string | null; id?: string | null }) => {
+  const ref = String(booking.ref ?? "").trim();
+  if (ref) {
+    const refSegments = ref.split(" - ");
+    const trailingSegment = refSegments[refSegments.length - 1]?.trim() ?? ref;
+    const slashIndex = trailingSegment.indexOf("/");
+    if (slashIndex > 0) {
+      return trailingSegment.slice(0, slashIndex).trim();
+    }
+
+    const refMatch = trailingSegment.match(/^(\d+)$/);
+    if (refMatch?.[1]) {
+      return refMatch[1];
+    }
+  }
+
   const groupName = String(booking.groupName ?? "").trim();
   if (groupName) {
     const slashIndex = groupName.indexOf("/");
-    return slashIndex > 0 ? groupName.slice(0, slashIndex).trim() : groupName;
+    if (slashIndex > 0) {
+      return groupName.slice(0, slashIndex).trim();
+    }
   }
 
-  const ref = String(booking.ref ?? "").trim();
-  const refMatch = ref.match(/(\d+)(?:\/\d+)?$/);
-  return refMatch?.[1] ?? (ref || String(booking.id ?? ""));
+  return String(booking.id ?? "");
 };
 
 const getGuideAssignStatus = (booking: { guideStatuses?: Record<string, number> }, guideName: string) =>
@@ -1036,7 +1056,7 @@ export function Timeline() {
           const days = [];
           let current = new Date(`${activeAssignmentBooking.startDay}T00:00:00`);
           for (let i = 0; i < activeAssignmentBooking.duration; i++) {
-            const dateStr = current.toISOString().split("T")[0];
+            const dateStr = toDateKey(current);
             const dayNum = i + 1;
             const bId = activeAssignmentBooking.id;
 
@@ -1541,7 +1561,7 @@ export function Timeline() {
       bookingRef: activeAssignmentBooking.ref,
       guideId,
       guideName,
-      date: emailRecord?.date ?? new Date().toISOString().split("T")[0],
+      date: emailRecord?.date ?? toDateKey(new Date()),
       subject: emailRecord?.subject ?? `${activeAssignmentBooking.client} | ${activeAssignmentBooking.groupName} | ${guideName}`,
       body:
         emailRecord?.body ??
@@ -2221,7 +2241,9 @@ export function Timeline() {
                             >
                               {event.type === "tour" && !isCancelledEvent(event) && zoomLevel !== 1 && (
                                 <div className="w-full h-full flex items-center px-1.5">
-                                  <span className="text-[9px] font-black text-white uppercase tracking-widest truncate">{seriesName !== "NO SERIES" ? seriesName : event.data.groupName}</span>
+                                  <span className="text-[9px] font-black text-white uppercase tracking-widest truncate">
+                                    {String(event.data.client ?? "").trim()}
+                                  </span>
                                 </div>
                               )}
                               {isCancelledEvent(event) && (
@@ -2349,7 +2371,7 @@ export function Timeline() {
 
             current.isConfirmed = current.isConfirmed || isGuideConfirmed(tour, detailsGuide.name);
             return map;
-          }, new Map<string, any>()),
+          }, new Map<string, any>()).values(),
         ).sort((a, b) => new Date(a.startDay).getTime() - new Date(b.startDay).getTime());
 
         const finishedCount = resBookingsInYear.filter(
@@ -2431,12 +2453,30 @@ export function Timeline() {
                   ) : (
                     displayedToursInYear.map((booking: any) => {
                       const isCancelled = booking.status?.toLowerCase() === 'cancelled';
-
+                      const representativeTour = booking.representativeTour ?? booking.sourceTours?.[0] ?? null;
+                      const displayResRef = String(booking.ref ?? booking.resCode ?? representativeTour?.ref ?? "").trim();
+                      const displayClient = String(booking.client ?? representativeTour?.client ?? "").trim();
+                      const displayStartDay = String(booking.startDay ?? representativeTour?.startDay ?? "").trim();
+                      const displayDeptDate = String(booking.deptDate ?? "").trim();
+                      const serviceRefs = (booking.sourceTours ?? [])
+                        .map((tour: any) => String(tour.ref ?? "").trim())
+                        .filter((value: string) => value.length > 0);
+                      const serviceSummary = serviceRefs.length > 0
+                        ? serviceRefs.join(", ")
+                        : "No services";
+                      
                       return (
                         <div key={booking.id} className={`px-4 py-3 rounded-xl border ${isCancelled ? 'border-[#C4E8FF]/50 bg-gray-50 opacity-60' : 'border-[#C4E8FF] bg-white shadow-sm'} transition-all flex items-center justify-between gap-3`}>
-                          <div className="flex flex-col min-w-0">
-                            <div className={`text-xs font-black truncate leading-tight ${isCancelled ? 'text-[#1D3663]/60 line-through' : 'text-[#1D3663]'}`} title={booking.ref}>{booking.ref}</div>
-                            <div className="text-[10px] font-bold text-[#1D3663]/65 mt-0.5 truncate">{booking.client} • {booking.startDay} → {booking.deptDate}</div>
+                          <div className="flex flex-col min-w-0 gap-0.5">
+                            <div className={`text-xs font-black leading-tight break-words ${isCancelled ? 'text-[#1D3663]/60 line-through' : 'text-[#1D3663]'}`} title={`RES ${booking.resCode}`}>
+                              RES {displayResRef || booking.resCode || "N/A"}
+                            </div>
+                            <div className="text-[10px] font-bold text-[#1D3663]/65 mt-0.5 break-words leading-relaxed" title={displayClient}>
+                              {displayClient || "No party name"} • {displayStartDay || "N/A"} → {displayDeptDate || "N/A"}
+                            </div>
+                            <div className="text-[9px] font-bold text-[#1D3663]/50 mt-1 break-words leading-relaxed" title={serviceSummary}>
+                              {booking.sourceTours?.length ?? 0} services • {serviceSummary}
+                            </div>
                           </div>
                           <div className="flex flex-col items-end gap-1.5 shrink-0 min-w-[75px]">
                             <div className="flex justify-end w-full">
