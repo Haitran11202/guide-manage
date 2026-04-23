@@ -175,6 +175,7 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
             var shiftColumnSql = await GetGuideBusyShiftColumnSqlAsync(connection, transaction, cancellationToken);
             await EnsureGuideExistsAsync(guideId, connection, transaction, cancellationToken);
             var assignments = new List<AssignGuideToServiceResponse>(normalizedTargets.Length);
+            var allowedResHolidayIds = normalizedTargets.Select(target => target.ResHolidayXid).ToArray();
 
             foreach (var target in normalizedTargets)
             {
@@ -182,6 +183,7 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
                     guideId,
                     target.ResHolidayXid,
                     target.ArrDate,
+                    allowedResHolidayIds,
                     normalizedShiftCode,
                     assignedBy,
                     normalizedOperatorNote,
@@ -377,6 +379,7 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         int guideId,
         int resHolidayId,
         DateTime? arrDate,
+        IReadOnlyCollection<int> allowedResHolidayIds,
         string normalizedShiftCode,
         int assignedBy,
         string normalizedOperatorNote,
@@ -425,7 +428,7 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
             guideId,
             effectiveArrDate,
             normalizedShiftCode,
-            resHolidayId,
+            allowedResHolidayIds,
             shiftColumnSql,
             connection,
             transaction,
@@ -618,21 +621,22 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         int guideId,
         DateTime arrDate,
         string maCa,
-        int resHolidayId,
+        IReadOnlyCollection<int> allowedResHolidayIds,
         string? shiftColumnSql,
         SqlConnection connection,
         SqlTransaction transaction,
         CancellationToken cancellationToken)
     {
-        const string sqlWithoutShift = """
+        var exclusionClause = BuildAllowedResHolidayExclusionClause(allowedResHolidayIds);
+        var sqlWithoutShift = $"""
             SELECT TOP (1) COALESCE(gb.ResHolidayXid, 0)
             FROM dbo.M_GuideBusy gb WITH (UPDLOCK, HOLDLOCK)
             WHERE gb.SupplierGuideXid = @GuideId
               AND CAST(gb.[Date] AS date) = @ArrDate
-              AND (gb.ResHolidayXid IS NULL OR gb.ResHolidayXid <> @ResHolidayId);
+              AND {exclusionClause};
             """;
 
-        var sqlWithShift = BuildEnsureGuideAvailableSqlWithShift(shiftColumnSql);
+        var sqlWithShift = BuildEnsureGuideAvailableSqlWithShift(shiftColumnSql, exclusionClause);
         await using var command = new SqlCommand(shiftColumnSql is not null ? sqlWithShift : sqlWithoutShift, connection, transaction);
         command.Parameters.Add("@GuideId", SqlDbType.Int).Value = guideId;
         command.Parameters.Add("@ArrDate", SqlDbType.Date).Value = arrDate.Date;
@@ -641,7 +645,7 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
             command.Parameters.Add("@MaCa", SqlDbType.VarChar, 10).Value = maCa;
             command.Parameters.Add("@AllDayShiftCode", SqlDbType.VarChar, 10).Value = AllDayShiftCode;
         }
-        command.Parameters.Add("@ResHolidayId", SqlDbType.Int).Value = resHolidayId;
+        AddAllowedResHolidayParameters(command, allowedResHolidayIds);
 
         var result = await command.ExecuteScalarAsync(cancellationToken);
         if (result is not null and not DBNull)
@@ -774,7 +778,30 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         );
         """;
 
-    private static string BuildEnsureGuideAvailableSqlWithShift(string? shiftColumnSql) => $"""
+    private static void AddAllowedResHolidayParameters(SqlCommand command, IReadOnlyCollection<int> allowedResHolidayIds)
+    {
+        var index = 0;
+        foreach (var resHolidayId in allowedResHolidayIds.Where(id => id > 0).Distinct())
+        {
+            command.Parameters.Add($"@AllowedResHolidayId{index}", SqlDbType.Int).Value = resHolidayId;
+            index += 1;
+        }
+    }
+
+    private static string BuildAllowedResHolidayExclusionClause(IReadOnlyCollection<int> allowedResHolidayIds)
+    {
+        var allowedIds = allowedResHolidayIds
+            .Where(id => id > 0)
+            .Distinct()
+            .Select((_, index) => $"@AllowedResHolidayId{index}")
+            .ToArray();
+
+        return allowedIds.Length == 0
+            ? "gb.ResHolidayXid IS NULL OR gb.ResHolidayXid <> -1"
+            : $"(gb.ResHolidayXid IS NULL OR gb.ResHolidayXid NOT IN ({string.Join(", ", allowedIds)}))";
+    }
+
+    private static string BuildEnsureGuideAvailableSqlWithShift(string? shiftColumnSql, string exclusionClause) => $"""
         SELECT TOP (1) COALESCE(gb.ResHolidayXid, 0)
         FROM dbo.M_GuideBusy gb WITH (UPDLOCK, HOLDLOCK)
         WHERE gb.SupplierGuideXid = @GuideId
@@ -786,6 +813,6 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
               OR UPPER(LTRIM(RTRIM(ISNULL(gb.{shiftColumnSql}, '')))) = @AllDayShiftCode
               OR LTRIM(RTRIM(ISNULL(gb.{shiftColumnSql}, ''))) = ''
           )
-          AND (gb.ResHolidayXid IS NULL OR gb.ResHolidayXid <> @ResHolidayId);
+          AND {exclusionClause};
         """;
 }
