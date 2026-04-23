@@ -355,49 +355,53 @@ public sealed class BookingsRepository(
         CancellationToken cancellationToken)
     {
         const string sql = @"SELECT
-    CAST(packageRh.Pid AS varchar(20)) AS Id,
-    CAST(res.ResNo AS nvarchar(50)) AS Ref,
-    c.Code AS Client,
-    res.PartyName AS GroupName,
-    res.ArrDate AS StartDay, 
-    CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END AS Duration, 
-    res.Status, 
-    CountryData.Countries AS Country, 
-    COALESCE(NULLIF(mh.Code, ''), 'NO SERIES') AS Series
-FROM dbo.Res res
-INNER JOIN dbo.M_Client c ON c.Pid = res.ClientXid
+            CAST(packageRh.Pid AS varchar(20)) AS Id,
+            CAST(res.ResNo AS nvarchar(50)) AS Ref,
+            c.Code AS Client,
+            res.PartyName AS GroupName,
+            res.ArrDate AS StartDay, 
+            CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END AS Duration, 
+            M_Status.Status, 
+            CountryData.Countries AS Country, 
+            COALESCE(NULLIF(mh.Code, ''), 'NO SERIES') AS Series
+        FROM dbo.Res res
+        INNER JOIN dbo.M_Client c ON c.Pid = res.ClientXid
+        left join M_Status on M_Status.Code = Res.Status
+        -- 1. Ghép chuỗi Quốc gia từ Res_Holidays
+        OUTER APPLY (
+            SELECT STUFF((
+                SELECT DISTINCT ', ' + mc.Country
+                FROM dbo.Res_Holidays rh_c
+                INNER JOIN dbo.M_Country mc ON mc.Pid = rh_c.CountryXid
+                WHERE rh_c.ResXid = res.Pid 
+                  AND rh_c.StatusXid != 9
+                FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''
+            ) AS Countries
+        ) AS CountryData
 
--- 1. Ghép chuỗi Quốc gia từ Res_Holidays
-OUTER APPLY (
-    SELECT STUFF((
-        SELECT DISTINCT ', ' + mc.Country
-        FROM dbo.Res_Holidays rh_c
-        INNER JOIN dbo.M_Country mc ON mc.Pid = rh_c.CountryXid
-        WHERE rh_c.ResXid = res.Pid 
-          AND rh_c.StatusXid != 9
-        FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''
-    ) AS Countries
-) AS CountryData
+        -- 2. Lấy Id và Series từ gói Holiday chính (Đã lược bỏ ServiceName, Holiday)
+        CROSS APPLY (
+            SELECT TOP (1)
+                rh.Pid,
+                rh.HolidayXid
+            FROM dbo.Res_Holidays rh
+            WHERE rh.ResXid = res.Pid
+              AND rh.ElementType = 'P'
+              AND rh.StatusXid != 9
+              AND rh.ArrDate IS NOT NULL
+              AND rh.ArrDate <= @RangeEnd
+              AND DATEADD(day, CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END, rh.ArrDate) >= @RangeStart
+            ORDER BY rh.NoOfNights DESC, rh.Pid DESC
+        ) packageRh
 
--- 2. Lấy Id và Series từ gói Holiday chính (Đã lược bỏ ServiceName, Holiday)
-CROSS APPLY (
-    SELECT TOP (1)
-        rh.Pid,
-        rh.HolidayXid
-    FROM dbo.Res_Holidays rh
-    WHERE rh.ResXid = res.Pid
-      AND rh.StatusXid != 9
-    ORDER BY rh.NoOfNights DESC, rh.Pid DESC
-) packageRh
+        LEFT JOIN dbo.M_Holidays mh ON mh.Pid = packageRh.HolidayXid
 
-LEFT JOIN dbo.M_Holidays mh ON mh.Pid = packageRh.HolidayXid
+        -- 3. Bộ lọc ngày tháng dựa trên dữ liệu bảng Res
+        WHERE res.ArrDate IS NOT NULL
+          AND res.ArrDate <= @RangeEnd
+          AND DATEADD(day, CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END, res.ArrDate) >= @RangeStart
 
--- 3. Bộ lọc ngày tháng dựa trên dữ liệu bảng Res
-WHERE res.ArrDate IS NOT NULL
-  AND res.ArrDate <= @RangeEnd
-  AND DATEADD(day, CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END, res.ArrDate) >= @RangeStart
-
-ORDER BY res.ArrDate, res.Pid;";
+        ORDER BY res.ArrDate, res.Pid;";
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
