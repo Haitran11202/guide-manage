@@ -797,6 +797,19 @@ export function Timeline() {
   }, [zoomLevel, totalDaysInRange, currentCellWidth]);
 
   useEffect(() => {
+    if (activeTab !== "calendar" || !isDaily || displayedDays.length === 0) {
+      return;
+    }
+
+    const fallbackStart = toDateKey(displayedDays[0]);
+    const fallbackEnd = toDateKey(displayedDays[Math.max(0, Math.min(displayedDays.length - 1, 6))]);
+
+    setVisibleDateStart((current) => current || fallbackStart);
+    setVisibleDateEnd((current) => current || fallbackEnd);
+    lastTimelineScrollLeftRef.current = null;
+  }, [activeTab, displayedDays, isDaily]);
+
+  useEffect(() => {
     const syncVisibleRange = (force = false) => {
       const container = timelineScrollRef.current;
       if (!container) return;
