@@ -890,6 +890,15 @@ export const mockApi = {
     });
   },
 
+  async unassignGuideBatch(resHolidayIds: number[], guideId: number): Promise<void> {
+    const validIds = resHolidayIds.filter((id) => Number.isInteger(id) && id > 0);
+    if (validIds.length === 0) return;
+    await request<void>(`/api/service-guide-assignments/guides/${guideId}/batch`, {
+      method: "DELETE",
+      body: JSON.stringify({ resHolidayIds: validIds }),
+    });
+  },
+
   async markGuidePersonalBusy(guideId: number, dateNghi: string, caNghi: ShiftCode): Promise<void> {
     await request<void>("/api/service-guide-assignments/busy-personal", {
       method: "POST",

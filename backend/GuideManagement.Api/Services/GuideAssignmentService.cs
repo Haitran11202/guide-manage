@@ -322,18 +322,40 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         }
     }
 
-    public async Task UnassignGuideAsync(int resHolidayId, int guideId, CancellationToken cancellationToken)
+    public Task UnassignGuideAsync(int resHolidayId, int guideId, CancellationToken cancellationToken)
+        => UnassignGuideBatchAsync([resHolidayId], guideId, cancellationToken);
+
+    public async Task UnassignGuideBatchAsync(
+        IReadOnlyList<int> resHolidayIds,
+        int guideId,
+        CancellationToken cancellationToken)
     {
-        const string deleteBusySql = """
+        var validIds = resHolidayIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+
+        if (validIds.Length == 0) return;
+
+        if (guideId <= 0)
+        {
+            throw new ArgumentException("Guide id must be greater than 0.");
+        }
+
+        // Build IN clause: @Id0, @Id1, ...
+        var paramNames = validIds.Select((_, i) => $"@Id{i}").ToArray();
+        var inClause = string.Join(", ", paramNames);
+
+        var deleteBusySql = $"""
             DELETE FROM dbo.M_GuideBusy
-            WHERE ResHolidayXid = @ResHolidayId
-              AND SupplierGuideXid = @GuideId;
+            WHERE SupplierGuideXid = @GuideId
+              AND ResHolidayXid IN ({inClause});
             """;
 
-        const string deleteAssignmentSql = """
+        var deleteAssignmentSql = $"""
             DELETE FROM dbo.Res_HolidayGuide
-            WHERE ResHolidayXid = @ResHolidayId
-              AND SupplierGuideXid = @GuideId;
+            WHERE SupplierGuideXid = @GuideId
+              AND ResHolidayXid IN ({inClause});
             """;
 
         await using var connection = connectionFactory.CreateConnection();
@@ -344,15 +366,21 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         {
             await using (var busyCommand = new SqlCommand(deleteBusySql, connection, transaction))
             {
-                busyCommand.Parameters.Add("@ResHolidayId", SqlDbType.Int).Value = resHolidayId;
                 busyCommand.Parameters.Add("@GuideId", SqlDbType.Int).Value = guideId;
+                for (var i = 0; i < validIds.Length; i++)
+                {
+                    busyCommand.Parameters.Add(paramNames[i], SqlDbType.Int).Value = validIds[i];
+                }
                 await busyCommand.ExecuteNonQueryAsync(cancellationToken);
             }
 
             await using (var assignmentCommand = new SqlCommand(deleteAssignmentSql, connection, transaction))
             {
-                assignmentCommand.Parameters.Add("@ResHolidayId", SqlDbType.Int).Value = resHolidayId;
                 assignmentCommand.Parameters.Add("@GuideId", SqlDbType.Int).Value = guideId;
+                for (var i = 0; i < validIds.Length; i++)
+                {
+                    assignmentCommand.Parameters.Add(paramNames[i], SqlDbType.Int).Value = validIds[i];
+                }
                 await assignmentCommand.ExecuteNonQueryAsync(cancellationToken);
             }
 
@@ -362,7 +390,7 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         {
             await RollbackAsync(transaction);
             throw new InvalidOperationException(
-                $"Failed to unassign guide {guideId} from service {resHolidayId}.",
+                $"Failed to unassign guide {guideId} from {validIds.Length} service(s).",
                 exception);
         }
     }

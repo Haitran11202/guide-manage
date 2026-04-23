@@ -31,6 +31,14 @@ public interface IGuideAssignmentService
         int guideId,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Unassigns a guide from multiple services in a single batch operation.
+    /// </summary>
+    Task UnassignGuideBatchAsync(
+        IReadOnlyList<int> resHolidayIds,
+        int guideId,
+        CancellationToken cancellationToken);
+
     Task MarkGuidePersonalBusyAsync(
         MarkGuidePersonalBusyRequest request,
         CancellationToken cancellationToken);

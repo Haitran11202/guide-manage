@@ -196,10 +196,52 @@ public sealed class ServiceGuideAssignmentsController(IGuideAssignmentService gu
             await guideAssignmentService.UnassignGuideAsync(resHolidayId, guideId, cancellationToken);
             return NoContent();
         }
+        catch (ArgumentException exception)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Invalid unassign request",
+                Detail = exception.Message,
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
         catch (InvalidOperationException exception)
         {
             return Problem(
                 title: "Guide unassign failed",
+                detail: exception.Message,
+                statusCode: StatusCodes.Status500InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Unassigns a guide from multiple services in one request.
+    /// Body: { "resHolidayIds": [1, 2, 3] }
+    /// </summary>
+    [HttpDelete("guides/{guideId:int}/batch")]
+    public async Task<IActionResult> UnassignGuideBatch(
+        int guideId,
+        [FromBody] UnassignGuideBatchRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await guideAssignmentService.UnassignGuideBatchAsync(request.ResHolidayIds, guideId, cancellationToken);
+            return NoContent();
+        }
+        catch (ArgumentException exception)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Invalid unassign request",
+                Detail = exception.Message,
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Problem(
+                title: "Guide batch unassign failed",
                 detail: exception.Message,
                 statusCode: StatusCodes.Status500InternalServerError);
         }
