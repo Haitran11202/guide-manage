@@ -979,23 +979,55 @@ public sealed class TimelineRepository(
     {
         const string sql = """
             SELECT
-                rh.Pid AS Id,
-                CAST(rh.RefId AS nvarchar(50)) AS RefId,
-                CAST(rh.SubResNo AS nvarchar(50)) AS SubResNo,
-                rh.ArrDate AS StartDay,
-                CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END AS Duration,
-                CAST(ISNULL(rh.PartyName, '') AS nvarchar(255)) AS Client,
-                CAST(ISNULL(rh.ServiceName, '') AS nvarchar(255)) AS ServiceName,
-                rh.StatusXid,
-                rh.CountryXid,
-                CAST(ISNULL(rh.Holiday, '') AS nvarchar(255)) AS Holiday,
-                LTRIM(RTRIM(ISNULL(mc.Country, ''))) AS Country
-            FROM dbo.Res_Holidays rh
-            LEFT JOIN dbo.M_Country mc ON mc.Pid = rh.CountryXid
-            WHERE rh.ArrDate IS NOT NULL
-              AND rh.ArrDate <= @RangeEnd
-              AND DATEADD(day, CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END, rh.ArrDate) >= @RangeStart
-            ORDER BY rh.ArrDate, rh.Pid;
+                packageRh.Pid AS Id,
+                CAST(res.ResNo AS nvarchar(50)) AS Ref,
+                CAST(ISNULL(c.Code, '') AS nvarchar(255)) AS Client,
+                CAST(ISNULL(res.PartyName, '') AS nvarchar(255)) AS GroupName,
+                res.ArrDate AS StartDay,
+                CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END AS Duration,
+                CASE res.Status
+                    WHEN 'O' THEN 'Option'
+                    WHEN 'C' THEN 'Confirmed'
+                    WHEN 'X' THEN 'Cancelled'
+                    WHEN 'B' THEN 'Booked'
+                    WHEN 'D' THEN 'Paid'
+                    ELSE 'Requested'
+                END AS Status,
+                CAST(ISNULL(CountryData.Countries, '') AS nvarchar(max)) AS Country,
+                CAST(COALESCE(NULLIF(mh.Code, ''), 'NO SERIES') AS nvarchar(100)) AS Series,
+                CAST(ISNULL(mh.Code, '') AS nvarchar(255)) AS TourName
+            FROM dbo.Res res
+            INNER JOIN dbo.M_Client c ON c.Pid = res.ClientXid
+            OUTER APPLY
+            (
+                SELECT STUFF((
+                    SELECT DISTINCT ', ' + mc.Country
+                    FROM dbo.Res_Holidays rh_c
+                    INNER JOIN dbo.M_Country mc ON mc.Pid = rh_c.CountryXid
+                    WHERE rh_c.ResXid = res.Pid
+                      AND rh_c.StatusXid != 9
+                    FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, ''
+                ) AS Countries
+            ) AS CountryData
+            CROSS APPLY
+            (
+                SELECT TOP (1)
+                    rh.Pid,
+                    rh.HolidayXid
+                FROM dbo.Res_Holidays rh
+                WHERE rh.ResXid = res.Pid
+                  AND rh.ElementType = 'P'
+                  AND rh.StatusXid != 9
+                  AND rh.ArrDate IS NOT NULL
+                  AND rh.ArrDate <= @RangeEnd
+                  AND DATEADD(day, CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END, rh.ArrDate) >= @RangeStart
+                ORDER BY rh.NoOfNights DESC, rh.Pid DESC
+            ) packageRh
+            LEFT JOIN dbo.M_Holidays mh ON mh.Pid = packageRh.HolidayXid
+            WHERE res.ArrDate IS NOT NULL
+              AND res.ArrDate <= @RangeEnd
+              AND DATEADD(day, CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END, res.ArrDate) >= @RangeStart
+            ORDER BY res.ArrDate, res.Pid;
             """;
 
         await using var connection = connectionFactory.CreateConnection();
@@ -1012,28 +1044,18 @@ public sealed class TimelineRepository(
 
         return rows.Select(row =>
         {
-            var subResNo = row.SubResNo?.Trim() ?? string.Empty;
-            var refId = row.RefId?.Trim() ?? string.Empty;
-            var groupName = string.IsNullOrWhiteSpace(subResNo)
-                ? row.Client ?? string.Empty
-                : subResNo;
-
             return new TimelineBookingDto
             {
                 Id = row.Id.ToString(),
-                Series = DeriveSeriesFromGroupName(groupName),
-                Ref = string.IsNullOrWhiteSpace(refId)
-                    ? (string.IsNullOrWhiteSpace(subResNo) ? $"BOOKING-{row.Id}" : subResNo)
-                    : string.IsNullOrWhiteSpace(subResNo) ? refId : $"{refId} - {subResNo}",
-                StartDay = row.StartDay is null ? null : DateOnly.FromDateTime(row.StartDay.Value),
+                Series = string.IsNullOrWhiteSpace(row.Series) ? "NO SERIES" : row.Series.Trim(),
+                Ref = string.IsNullOrWhiteSpace(row.Ref) ? $"BOOKING-{row.Id}" : row.Ref.Trim(),
+                StartDay = DateOnly.FromDateTime(row.StartDay),
                 Duration = Math.Max(1, row.Duration),
                 Client = row.Client ?? string.Empty,
-                GroupName = groupName,
-                TourName = !string.IsNullOrWhiteSpace(row.ServiceName) ? row.ServiceName : row.Holiday ?? string.Empty,
-                Status = MapBookingStatus(row.StatusXid),
-                Country = !string.IsNullOrWhiteSpace(row.Country)
-                    ? row.Country
-                    : row.CountryXid.HasValue ? $"Country {row.CountryXid.Value}" : string.Empty,
+                GroupName = row.GroupName ?? string.Empty,
+                TourName = row.TourName ?? string.Empty,
+                Status = row.Status ?? string.Empty,
+                Country = row.Country ?? string.Empty,
                 AssignedGuides = [],
                 ConfirmedGuides = []
             };
@@ -1099,7 +1121,7 @@ public sealed class TimelineRepository(
                   AND hg.ResHolidayXid IS NOT NULL
             )
             SELECT
-                CAST(rh.Pid AS varchar(20)) AS BookingId,
+                CAST(packageRh.Pid AS varchar(20)) AS BookingId,
                 COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS GuideId,
                 latestGuide.SendSMS,
                 latestGuide.Message,
@@ -1112,6 +1134,20 @@ public sealed class TimelineRepository(
             LEFT JOIN LatestHolidayGuide latestGuide
                 ON latestGuide.ResHolidayXid = rh.Pid
                AND latestGuide.RowNum = 1
+            INNER JOIN dbo.Res res ON res.Pid = rh.ResXid
+            CROSS APPLY
+            (
+                SELECT TOP (1)
+                    pkg.Pid
+                FROM dbo.Res_Holidays pkg
+                WHERE pkg.ResXid = res.Pid
+                  AND pkg.ElementType = 'P'
+                  AND pkg.StatusXid != 9
+                  AND pkg.ArrDate IS NOT NULL
+                  AND pkg.ArrDate <= @RangeEnd
+                  AND DATEADD(day, CASE WHEN ISNULL(pkg.NoOfNights, 1) < 1 THEN 1 ELSE pkg.NoOfNights END, pkg.ArrDate) >= @RangeStart
+                ORDER BY pkg.NoOfNights DESC, pkg.Pid DESC
+            ) packageRh
             INNER JOIN dbo.M_SupplierGuide g ON g.Pid = COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid)
             WHERE COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) IS NOT NULL
               AND (@CountryXid IS NULL OR ISNULL(g.CountryXid, @DefaultGuideCountryXid) = @CountryXid)
@@ -1501,16 +1537,15 @@ public sealed class TimelineRepository(
 
     private sealed record TimelineBookingRow(
         int Id,
-        string? RefId,
-        string? SubResNo,
-        DateTime? StartDay,
-        int Duration,
+        string? Ref,
         string? Client,
-        string? ServiceName,
-        int? StatusXid,
-        int? CountryXid,
-        string? Holiday,
-        string? Country);
+        string? GroupName,
+        DateTime StartDay,
+        int Duration,
+        string? Status,
+        string? Country,
+        string? Series,
+        string? TourName);
 
     private sealed record GuideRow(int Id, string Name, string Appearance);
 
