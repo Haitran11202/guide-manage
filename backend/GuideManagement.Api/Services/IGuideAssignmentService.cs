@@ -13,6 +13,10 @@ public interface IGuideAssignmentService
         AssignGuideToServiceRequest request,
         CancellationToken cancellationToken);
 
+    Task<AssignGuideToServicesResponse> AssignGuideToServicesAsync(
+        AssignGuideToServicesRequest request,
+        CancellationToken cancellationToken);
+
     Task ConfirmServiceGuideAsync(
         int resHolidayId,
         CancellationToken cancellationToken);

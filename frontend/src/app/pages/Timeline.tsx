@@ -1236,10 +1236,10 @@ export function Timeline() {
         }
       }
     })();
-
     return () => {
       active = false;
     };
+    
   }, [activeAssignmentBooking, selectedItemsToAssign, serviceDateByItemId, showGuideSelector]);
 
   useEffect(() => {
@@ -1594,24 +1594,30 @@ export function Timeline() {
   const handleConfirmAssignment = async () => {
     if (!activeAssignmentBooking || !selectedGuideId) return;
 
-    const targetItemIds = getTargetItemIds();
-    await runTimelineApi("Assigning guide...", async () => {
-      for (const itemId of targetItemIds) {
-        const serviceId = Number(itemId);
-        const arrDate = serviceDateByItemId.get(itemId);
-        if (!Number.isInteger(serviceId) || serviceId <= 0 || !arrDate) {
-          continue;
-        }
+    const assignmentItems = getTargetItemIds()
+      .map((itemId) => ({
+        resHolidayXid: Number(itemId),
+        arrDate: serviceDateByItemId.get(itemId) ?? "",
+      }))
+      .filter(
+        (item) =>
+          Number.isInteger(item.resHolidayXid) &&
+          item.resHolidayXid > 0 &&
+          item.arrDate.trim().length > 0,
+      );
 
-        await mockApi.assignGuideToService({
-          resHolidayXid: serviceId,
-          supplierGuideXid: selectedGuideId,
-          arrDate,
-          maCa: "ALL",
-          assignedBy: 1,
-          operatorNote: "",
-        });
-      }
+    if (assignmentItems.length === 0) {
+      return;
+    }
+
+    await runTimelineApi("Assigning guide...", async () => {
+      await mockApi.assignGuideToServices({
+        supplierGuideXid: selectedGuideId,
+        items: assignmentItems,
+        maCa: "ALL",
+        assignedBy: 1,
+        operatorNote: "",
+      });
     });
 
     const updatedBooking = await refreshTimelineAndBookingManager(activeAssignmentBooking);

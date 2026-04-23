@@ -2,6 +2,8 @@ import type {
   AvailableGuide,
   AssignGuideToServiceRequest,
   AssignGuideToServiceResponse,
+  AssignGuideToServicesRequest,
+  AssignGuideToServicesResponse,
   BookingManagerData,
   CityOption,
   CountryOption,
@@ -126,6 +128,14 @@ type ApiAssignGuideToServiceResponse = {
   assignedBy: number;
   assignedDateUtc: string;
   operatorNote: string;
+};
+
+type ApiAssignGuideToServicesResponse = {
+  supplierGuideXid: number;
+  maCa: ShiftCode;
+  assignedBy: number;
+  assignedDateUtc: string;
+  assignments: ApiAssignGuideToServiceResponse[];
 };
 
 type ApiAvailableGuide = {
@@ -638,6 +648,16 @@ const mapAssignGuideToServiceResponse = (
   operatorNote: assignment.operatorNote ?? "",
 });
 
+const mapAssignGuideToServicesResponse = (
+  assignment: ApiAssignGuideToServicesResponse,
+): AssignGuideToServicesResponse => ({
+  supplierGuideXid: assignment.supplierGuideXid,
+  maCa: assignment.maCa,
+  assignedBy: assignment.assignedBy,
+  assignedDateUtc: assignment.assignedDateUtc,
+  assignments: (assignment.assignments ?? []).map(mapAssignGuideToServiceResponse),
+});
+
 export const mockApi = {
   async getGuides(): Promise<GuideDirectoryItem[]> {
     return request<ApiGuideDirectoryItem[]>("/api/guides");
@@ -803,6 +823,24 @@ export const mockApi = {
     });
 
     return mapAssignGuideToServiceResponse(assignment);
+  },
+
+  async assignGuideToServices(payload: AssignGuideToServicesRequest): Promise<AssignGuideToServicesResponse> {
+    const assignment = await request<ApiAssignGuideToServicesResponse>("/api/service-guide-assignments/batch", {
+      method: "POST",
+      body: JSON.stringify({
+        supplierGuideXid: payload.supplierGuideXid,
+        items: payload.items.map((item) => ({
+          resHolidayXid: item.resHolidayXid,
+          arrDate: item.arrDate,
+        })),
+        maCa: payload.maCa ?? "ALL",
+        operatorNote: payload.operatorNote ?? "",
+        assignedBy: payload.assignedBy,
+      }),
+    });
+
+    return mapAssignGuideToServicesResponse(assignment);
   },
 
   async searchAvailableGuides(arrDate: string, maCa: ShiftCode): Promise<AvailableGuide[]> {

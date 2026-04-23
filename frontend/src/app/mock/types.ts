@@ -255,6 +255,17 @@ export type AssignGuideToServiceRequest = {
   assignedBy: number;
 };
 
+export type AssignGuideToServicesRequest = {
+  supplierGuideXid: number;
+  items: Array<{
+    resHolidayXid: number;
+    arrDate: string;
+  }>;
+  maCa?: ShiftCode;
+  operatorNote?: string;
+  assignedBy: number;
+};
+
 export type AssignGuideToServiceResponse = {
   pid: number;
   resHolidayXid: number;
@@ -266,6 +277,14 @@ export type AssignGuideToServiceResponse = {
   assignedBy: number;
   assignedDateUtc: string;
   operatorNote: string;
+};
+
+export type AssignGuideToServicesResponse = {
+  supplierGuideXid: number;
+  maCa: ShiftCode;
+  assignedBy: number;
+  assignedDateUtc: string;
+  assignments: AssignGuideToServiceResponse[];
 };
 
 export type TimelineData = {

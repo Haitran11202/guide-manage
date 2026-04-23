@@ -138,7 +138,8 @@ export function TimelineBookingAssignmentModal({
       }),
     [dailyColumns],
   );
-
+  console.log(dailyColumns);
+  
   const guideExceptionLabels = useMemo(() => {
     if (!activeAssignmentBooking) return new Map<string, string>();
 

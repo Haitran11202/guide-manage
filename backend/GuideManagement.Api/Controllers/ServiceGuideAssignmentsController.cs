@@ -83,6 +83,52 @@ public sealed class ServiceGuideAssignmentsController(IGuideAssignmentService gu
         }
     }
 
+    [HttpPost("batch")]
+    public async Task<ActionResult<AssignGuideToServicesResponse>> AssignGuideToServices(
+        [FromBody] AssignGuideToServicesRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await guideAssignmentService.AssignGuideToServicesAsync(request, cancellationToken);
+            return Ok(result);
+        }
+        catch (GuideAssignmentConflictException exception)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Guide assignment conflict",
+                Detail = exception.Message,
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+        catch (KeyNotFoundException exception)
+        {
+            return NotFound(new ProblemDetails
+            {
+                Title = "Assignment target not found",
+                Detail = exception.Message,
+                Status = StatusCodes.Status404NotFound
+            });
+        }
+        catch (ArgumentException exception)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Invalid assignment request",
+                Detail = exception.Message,
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Problem(
+                title: "Guide assignment failed",
+                detail: exception.Message,
+                statusCode: StatusCodes.Status500InternalServerError);
+        }
+    }
+
     [HttpPost("confirm")]
     public async Task<IActionResult> ConfirmServiceGuide(
         [FromBody] ConfirmServiceGuideRequest request,

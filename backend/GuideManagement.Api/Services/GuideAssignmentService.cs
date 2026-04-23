@@ -86,101 +86,108 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         AssignGuideToServiceRequest request,
         CancellationToken cancellationToken)
     {
-        const string insertSql = """
-            INSERT INTO dbo.Res_HolidayGuide
-            (
-                ResHolidayXid,
-                SupplierGuideXid,
-                AssignStatus
-            )
-            OUTPUT INSERTED.Pid
-            VALUES
-            (
-                @ResHolidayXid,
-                @SupplierGuideXid,
-                @AssignStatus
-            );
-            """;
+        var result = await AssignGuideToServicesInternalAsync(
+            request.SupplierGuideXid,
+            [new AssignmentTarget(request.ResHolidayXid, request.ArrDate)],
+            request.MaCa,
+            request.AssignedBy,
+            request.OperatorNote,
+            cancellationToken);
 
-        const string insertBusySqlWithoutShift = """
-            INSERT INTO dbo.M_GuideBusy
-            (
-                SupplierGuideXid,
-                [Date],
-                Busy,
-                ResHolidayXid
-            )
-            VALUES
-            (
-                @SupplierGuideXid,
-                @ArrDate,
-                @Busy,
-                @ResHolidayXid
-            );
-            """;
+        return result.Assignments[0];
+    }
 
-        var normalizedShiftCode = NormalizeShiftCode(request.MaCa);
+    public async Task<AssignGuideToServicesResponse> AssignGuideToServicesAsync(
+        AssignGuideToServicesRequest request,
+        CancellationToken cancellationToken)
+        => await AssignGuideToServicesInternalAsync(
+            request.SupplierGuideXid,
+            request.Items
+                .Select(item => new AssignmentTarget(item.ResHolidayXid, item.ArrDate))
+                .ToArray(),
+            request.MaCa,
+            request.AssignedBy,
+            request.OperatorNote,
+            cancellationToken);
 
+    private async Task<AssignGuideToServicesResponse> AssignGuideToServicesInternalAsync(
+        int guideId,
+        IReadOnlyList<AssignmentTarget> targets,
+        string? maCa,
+        int assignedBy,
+        string? operatorNote,
+        CancellationToken cancellationToken)
+    {
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
 
         try
         {
-            var shiftColumnSql = await GetGuideBusyShiftColumnSqlAsync(connection, transaction, cancellationToken);
-            var serviceArrDate = await GetArrDateByResHolidayIdAsync(request.ResHolidayXid, connection, transaction, cancellationToken);
-            var effectiveArrDate = request.ArrDate?.Date ?? serviceArrDate.Date;
-            if (request.ArrDate.HasValue && request.ArrDate.Value.Date != serviceArrDate.Date)
+            var normalizedShiftCode = NormalizeShiftCode(maCa);
+            var normalizedOperatorNote = (operatorNote ?? string.Empty).Trim();
+            var normalizedTargets = targets
+                .Where(target => target.ResHolidayXid > 0)
+                .GroupBy(target => target.ResHolidayXid)
+                .Select(group =>
+                {
+                    var first = group.First();
+                    var normalizedDate = first.ArrDate?.Date;
+
+                    if (group.Any(item => item.ArrDate?.Date != normalizedDate))
+                    {
+                        throw new ArgumentException($"Conflicting ArrDate values were supplied for ResHoliday {group.Key}.");
+                    }
+
+                    return new AssignmentTarget(group.Key, normalizedDate);
+                })
+                .ToArray();
+
+            if (guideId <= 0)
             {
-                throw new ArgumentException(
-                    $"ArrDate {request.ArrDate.Value:yyyy-MM-dd} does not match service date {serviceArrDate:yyyy-MM-dd} for ResHoliday {request.ResHolidayXid}.");
+                throw new ArgumentException("Guide id must be greater than 0.");
             }
 
-            await EnsureGuideExistsAsync(request.SupplierGuideXid, connection, transaction, cancellationToken);
-            await EnsureGuideIsAvailableAsync(
-                request.SupplierGuideXid,
-                effectiveArrDate,
-                normalizedShiftCode,
-                request.ResHolidayXid,
-                shiftColumnSql,
-                connection,
-                transaction,
-                cancellationToken);
+            if (assignedBy <= 0)
+            {
+                throw new ArgumentException("AssignedBy must be greater than 0.");
+            }
 
-            var assignmentId = await InsertGuideAssignmentAsync(
-                request.ResHolidayXid,
-                request.SupplierGuideXid,
-                connection,
-                transaction,
-                insertSql,
-                cancellationToken);
+            if (normalizedTargets.Length == 0)
+            {
+                throw new ArgumentException("At least one assignment item is required.");
+            }
 
-            await InsertGuideBusyAsync(
-                request.SupplierGuideXid,
-                request.ResHolidayXid,
-                effectiveArrDate,
-                normalizedShiftCode,
-                PendingBusyStatus,
-                connection,
-                transaction,
-                shiftColumnSql is not null ? BuildInsertGuideBusySqlWithShift(shiftColumnSql) : insertBusySqlWithoutShift,
-                shiftColumnSql is not null,
-                cancellationToken);
+            var shiftColumnSql = await GetGuideBusyShiftColumnSqlAsync(connection, transaction, cancellationToken);
+            await EnsureGuideExistsAsync(guideId, connection, transaction, cancellationToken);
+            var assignments = new List<AssignGuideToServiceResponse>(normalizedTargets.Length);
+
+            foreach (var target in normalizedTargets)
+            {
+                var assignment = await AssignGuideToSingleServiceAsync(
+                    guideId,
+                    target.ResHolidayXid,
+                    target.ArrDate,
+                    normalizedShiftCode,
+                    assignedBy,
+                    normalizedOperatorNote,
+                    shiftColumnSql,
+                    connection,
+                    transaction,
+                    cancellationToken);
+
+                assignments.Add(assignment);
+            }
 
             await transaction.CommitAsync(cancellationToken);
 
-            return new AssignGuideToServiceResponse
+            return new AssignGuideToServicesResponse
             {
-                Pid = assignmentId,
-                ResHolidayXid = request.ResHolidayXid,
-                SupplierGuideXid = request.SupplierGuideXid,
-                ArrDate = effectiveArrDate,
                 MaCa = normalizedShiftCode,
-                BusyStatus = PendingBusyStatus,
-                AssignStatus = PendingAssignStatus,
-                AssignedBy = request.AssignedBy,
+                SupplierGuideXid = guideId,
+                AssignedBy = assignedBy,
                 AssignedDateUtc = DateTime.UtcNow,
-                OperatorNote = request.OperatorNote.Trim()
+                Assignments = assignments
             };
         }
         catch
@@ -343,6 +350,99 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         }
     }
 
+    private static async Task<AssignGuideToServiceResponse> AssignGuideToSingleServiceAsync(
+        int guideId,
+        int resHolidayId,
+        DateTime? arrDate,
+        string normalizedShiftCode,
+        int assignedBy,
+        string normalizedOperatorNote,
+        string? shiftColumnSql,
+        SqlConnection connection,
+        SqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        const string insertAssignmentSql = """
+            INSERT INTO dbo.Res_HolidayGuide
+            (
+                ResHolidayXid,
+                SupplierGuideXid,
+                AssignStatus
+            )
+            OUTPUT INSERTED.Pid
+            VALUES
+            (
+                @ResHolidayXid,
+                @SupplierGuideXid,
+                @AssignStatus
+            );
+            """;
+
+        const string insertBusySqlWithoutShift = """
+            INSERT INTO dbo.M_GuideBusy
+            (
+                SupplierGuideXid,
+                [Date],
+                Busy,
+                ResHolidayXid
+            )
+            VALUES
+            (
+                @SupplierGuideXid,
+                @ArrDate,
+                @Busy,
+                @ResHolidayXid
+            );
+            """;
+
+        var effectiveArrDate = arrDate?.Date
+            ?? (await GetArrDateByResHolidayIdAsync(resHolidayId, connection, transaction, cancellationToken)).Date;
+
+        await EnsureGuideIsAvailableAsync(
+            guideId,
+            effectiveArrDate,
+            normalizedShiftCode,
+            resHolidayId,
+            shiftColumnSql,
+            connection,
+            transaction,
+            cancellationToken);
+
+        var assignmentId = await InsertGuideAssignmentAsync(
+            resHolidayId,
+            guideId,
+            connection,
+            transaction,
+            insertAssignmentSql,
+            cancellationToken);
+
+        await InsertGuideBusyAsync(
+            guideId,
+            resHolidayId,
+            effectiveArrDate,
+            normalizedShiftCode,
+            PendingBusyStatus,
+            connection,
+            transaction,
+            shiftColumnSql is not null ? BuildInsertGuideBusySqlWithShift(shiftColumnSql) : insertBusySqlWithoutShift,
+            shiftColumnSql is not null,
+            cancellationToken);
+
+        return new AssignGuideToServiceResponse
+        {
+            Pid = assignmentId,
+            ResHolidayXid = resHolidayId,
+            SupplierGuideXid = guideId,
+            ArrDate = effectiveArrDate,
+            MaCa = normalizedShiftCode,
+            BusyStatus = PendingBusyStatus,
+            AssignStatus = PendingAssignStatus,
+            AssignedBy = assignedBy,
+            AssignedDateUtc = DateTime.UtcNow,
+            OperatorNote = normalizedOperatorNote
+        };
+    }
+
     private static string NormalizeShiftCode(string? maCa)
     {
         if (string.IsNullOrWhiteSpace(maCa))
@@ -451,6 +551,8 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
 
         return Convert.ToDateTime(result);
     }
+
+    private sealed record AssignmentTarget(int ResHolidayXid, DateTime? ArrDate);
 
     private static async Task EnsureGuideIsAvailableAsync(
         int guideId,
