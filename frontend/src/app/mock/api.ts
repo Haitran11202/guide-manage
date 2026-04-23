@@ -860,6 +860,23 @@ export const mockApi = {
     }));
   },
 
+  async searchAvailableGuidesForDates(arrDates: string[], maCa: ShiftCode): Promise<AvailableGuide[]> {
+    const guides = await request<ApiAvailableGuide[]>("/api/service-guide-assignments/available-guides/search", {
+      method: "POST",
+      body: JSON.stringify({
+        arrDates,
+        maCa,
+      }),
+    });
+
+    return (guides ?? []).map((guide) => ({
+      guideId: guide.guideId,
+      guideName: guide.guideName,
+      busyShiftCodes: (guide.busyShiftCodes ?? []).map((shiftCode) => ensureShiftCode(shiftCode)),
+      availableShiftCodes: (guide.availableShiftCodes ?? []).map((shiftCode) => ensureShiftCode(shiftCode)),
+    }));
+  },
+
   async confirmServiceGuide(resHolidayId: number): Promise<void> {
     await request<void>("/api/service-guide-assignments/confirm", {
       method: "POST",

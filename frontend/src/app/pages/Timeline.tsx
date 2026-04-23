@@ -1218,78 +1218,30 @@ export function Timeline() {
 
     void (async () => {
       try {
-        const availabilityResponses = await Promise.all(
-          targetDates.map((date) => mockApi.searchAvailableGuides(date, "ALL")),
-        );
+        const availableGuides = await mockApi.searchAvailableGuidesForDates(targetDates, "ALL");
 
         if (!active) {
           return;
         }
 
-        const aggregatedAvailability = new Map<number, GuideAvailability>();
-
-        availabilityResponses.forEach((guides, responseIndex) => {
-          guides.forEach((guide) => {
-            const dateAvailableShifts = guide.availableShiftCodes.filter((shiftCode) => shiftCode !== "ALL");
-            const dateBusyShifts = guide.busyShiftCodes.filter((shiftCode) => shiftCode !== "ALL");
-            const current = aggregatedAvailability.get(guide.guideId);
-
-            if (!current) {
-              aggregatedAvailability.set(guide.guideId, {
-                label: "Available",
-                color: "text-[#1D3663]",
-                selectable: dateAvailableShifts.length > 0,
-                requiresShiftSelection: dateBusyShifts.length > 0,
-                availableShiftCodes: [...dateAvailableShifts],
-                busyShiftCodes: [...dateBusyShifts],
-              });
-              return;
-            }
-
-            const nextAvailableShifts = current.availableShiftCodes.filter((shiftCode) =>
-              dateAvailableShifts.includes(shiftCode),
-            );
-            const nextBusyShifts = Array.from(new Set([...current.busyShiftCodes, ...dateBusyShifts])).sort();
-
-            aggregatedAvailability.set(guide.guideId, {
-              ...current,
-              selectable: nextAvailableShifts.length > 0,
-              requiresShiftSelection: current.requiresShiftSelection || dateBusyShifts.length > 0,
-              availableShiftCodes: nextAvailableShifts,
-              busyShiftCodes: nextBusyShifts,
-            });
-          });
-
-          if (responseIndex > 0) {
-            Array.from(aggregatedAvailability.keys()).forEach((guideId) => {
-              if (!guides.some((guide) => guide.guideId === guideId)) {
-                aggregatedAvailability.set(guideId, {
-                  label: "Busy",
-                  color: "text-[#F3796A]",
-                  selectable: false,
-                  requiresShiftSelection: true,
-                  availableShiftCodes: [],
-                  busyShiftCodes: CONCRETE_SHIFT_OPTIONS.map((option) => option.value),
-                });
-              }
-            });
-          }
-        });
-
         const nextAvailabilityById = new Map<number, GuideAvailability>();
-        aggregatedAvailability.forEach((availability, guideId) => {
-          const isFullyFree = availability.availableShiftCodes.length === CONCRETE_SHIFT_OPTIONS.length
-            && availability.busyShiftCodes.length === 0;
-          const isSelectable = availability.availableShiftCodes.length > 0;
+        availableGuides.forEach((guide) => {
+          const availableShiftCodes = guide.availableShiftCodes.filter((shiftCode) => shiftCode !== "ALL");
+          const busyShiftCodes = guide.busyShiftCodes.filter((shiftCode) => shiftCode !== "ALL");
+          const isFullyFree = availableShiftCodes.length === CONCRETE_SHIFT_OPTIONS.length
+            && busyShiftCodes.length === 0;
+          const isSelectable = availableShiftCodes.length > 0;
 
-          nextAvailabilityById.set(guideId, {
-            ...availability,
+          nextAvailabilityById.set(guide.guideId, {
             label: isSelectable
-              ? availability.requiresShiftSelection ? "Select shift" : "Available"
+              ? busyShiftCodes.length > 0 ? "Select shift" : "Available"
               : "Busy",
             color: isSelectable ? "text-[#1D3663]" : "text-[#F3796A]",
             selectable: isSelectable,
-            requiresShiftSelection: !isFullyFree && availability.requiresShiftSelection,
+            requiresTimeInput: false,
+            requiresShiftSelection: !isFullyFree && busyShiftCodes.length > 0,
+            availableShiftCodes,
+            busyShiftCodes,
           });
         });
 

@@ -9,6 +9,11 @@ public interface IGuideAssignmentService
         string? maCa,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<AvailableGuideDto>> SearchAvailableGuidesAsync(
+        IReadOnlyList<DateTime> arrDates,
+        string? maCa,
+        CancellationToken cancellationToken);
+
     Task<AssignGuideToServiceResponse> AssignGuideToServiceAsync(
         AssignGuideToServiceRequest request,
         CancellationToken cancellationToken);

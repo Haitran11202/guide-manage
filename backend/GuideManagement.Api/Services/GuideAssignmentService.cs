@@ -96,6 +96,34 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         }
     }
 
+    public async Task<IReadOnlyList<AvailableGuideDto>> SearchAvailableGuidesAsync(
+        IReadOnlyList<DateTime> arrDates,
+        string? maCa,
+        CancellationToken cancellationToken)
+    {
+        var normalizedDates = arrDates
+            .Select(value => value.Date)
+            .Distinct()
+            .OrderBy(value => value)
+            .ToArray();
+
+        if (normalizedDates.Length == 0)
+        {
+            return [];
+        }
+
+        IReadOnlyList<AvailableGuideDto>? aggregated = null;
+        foreach (var arrDate in normalizedDates)
+        {
+            var dailyAvailability = await SearchAvailableGuidesAsync(arrDate, maCa, cancellationToken);
+            aggregated = aggregated is null
+                ? dailyAvailability
+                : AggregateAvailableGuides(aggregated, dailyAvailability);
+        }
+
+        return aggregated ?? [];
+    }
+
     public async Task<AssignGuideToServiceResponse> AssignGuideToServiceAsync(
         AssignGuideToServiceRequest request,
         CancellationToken cancellationToken)
@@ -509,6 +537,39 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         }
 
         return ValidShiftCodes.Contains(normalized) ? [normalized] : ConcreteShiftCodes;
+    }
+
+    private static IReadOnlyList<AvailableGuideDto> AggregateAvailableGuides(
+        IReadOnlyList<AvailableGuideDto> current,
+        IReadOnlyList<AvailableGuideDto> next)
+    {
+        var nextByGuideId = next.ToDictionary(item => item.GuideId);
+
+        return current
+            .Where(item => nextByGuideId.ContainsKey(item.GuideId))
+            .Select(item =>
+            {
+                var nextItem = nextByGuideId[item.GuideId];
+                var busyShiftCodes = item.BusyShiftCodes
+                    .Concat(nextItem.BusyShiftCodes)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var availableShiftCodes = item.AvailableShiftCodes
+                    .Intersect(nextItem.AvailableShiftCodes, StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                return new AvailableGuideDto
+                {
+                    GuideId = item.GuideId,
+                    GuideName = item.GuideName,
+                    BusyShiftCodes = busyShiftCodes,
+                    AvailableShiftCodes = availableShiftCodes
+                };
+            })
+            .OrderBy(item => item.GuideName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static async Task RollbackAsync(SqlTransaction transaction)

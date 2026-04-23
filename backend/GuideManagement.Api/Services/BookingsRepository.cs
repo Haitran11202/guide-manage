@@ -245,11 +245,19 @@ public sealed class BookingsRepository(
                 };
             })
             .Where(booking => MatchesBookingFilters(booking, search, client, country, guide, series))
+            .OrderBy(booking => NormalizeSeriesKey(booking.Series))
+            .ThenBy(booking => booking.StartDay ?? DateOnly.MaxValue)
+            .ThenBy(booking => booking.Ref, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
         var bookingsBySeries = filteredBookings
             .GroupBy(booking => string.IsNullOrWhiteSpace(booking.Series) ? "NO SERIES" : booking.Series)
-            .ToDictionary(group => group.Key, group => group.OrderBy(booking => booking.StartDay).ToArray());
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(booking => booking.StartDay ?? DateOnly.MaxValue)
+                    .ThenBy(booking => booking.Ref, StringComparer.OrdinalIgnoreCase)
+                    .ToArray());
 
         var bookingSeries = bookingsBySeries
             .Select(group =>
@@ -780,6 +788,9 @@ ORDER BY res.ArrDate, res.Pid;";
 
         return true;
     }
+
+    private static string NormalizeSeriesKey(string? series)
+        => string.IsNullOrWhiteSpace(series) ? "NO SERIES" : series.Trim();
 
     private static bool ContainsIgnoreCase(string? source, string? value)
     {

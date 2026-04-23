@@ -37,6 +37,34 @@ public sealed class ServiceGuideAssignmentsController(IGuideAssignmentService gu
         }
     }
 
+    [HttpPost("available-guides/search")]
+    public async Task<ActionResult<IReadOnlyList<AvailableGuideDto>>> SearchAvailableGuidesByDates(
+        [FromBody] SearchAvailableGuidesRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await guideAssignmentService.SearchAvailableGuidesAsync(request.ArrDates, request.MaCa, cancellationToken);
+            return Ok(result);
+        }
+        catch (ArgumentException exception)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Invalid guide availability filter",
+                Detail = exception.Message,
+                Status = StatusCodes.Status400BadRequest
+            });
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Problem(
+                title: "Guide availability search failed",
+                detail: exception.Message,
+                statusCode: StatusCodes.Status500InternalServerError);
+        }
+    }
+
     [HttpPost]
     public async Task<ActionResult<AssignGuideToServiceResponse>> AssignGuideToService(
         [FromBody] AssignGuideToServiceRequest request,
