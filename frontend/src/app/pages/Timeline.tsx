@@ -500,12 +500,14 @@ export function Timeline() {
   };
 
   const refreshTimelineAndBookingManager = async (booking: Booking | null) => {
-    const nextTimelineData = await fetchTimelineData();
     if (!booking) {
       return null;
     }
 
-    const refreshedBooking = resolveActiveAssignmentBooking(nextTimelineData, booking) ?? booking;
+    const refreshedBooking = activeTab === "bookings"
+      ? await refreshLoadedBookingSeries(booking, "Refreshing booking data...")
+      : resolveActiveAssignmentBooking(await fetchTimelineData(), booking) ?? booking;
+
     return await refreshActiveBookingManager(refreshedBooking);
   };
 
@@ -869,52 +871,24 @@ export function Timeline() {
     seriesTake: BOOKING_SERIES_PAGE_SIZE,
   });
 
-  const refreshBookingSeriesPage = async (booking: Booking | null) => {
-    if (!booking || activeTab !== "bookings") {
-      return;
-    }
-
+  const refreshLoadedBookingSeries = async (
+    booking: Booking,
+    loadingLabel: string,
+    showLoadingOverlay = false,
+  ) => {
     const series = getBookingSeriesName(booking);
-    const loadedCount = groupedBySeries[series]?.length ?? 0;
+    const loadedCount = Math.max(groupedBySeries[series]?.length ?? 0, BOOKING_SERIES_PAGE_SIZE);
+
     setLoadingBookingSeries((current) => (current.includes(series) ? current : [...current, series]));
     try {
-      const nextTimelineData = await runTimelineApi("Refreshing booking data...", () =>
-      mockApi.getBookingsData({
-        ...buildBookingsTimelineQuery(),
-        loadSeries: series,
-        seriesSkip: 0,
-        seriesTake: Math.max(loadedCount, BOOKING_SERIES_PAGE_SIZE),
-      }),
-      false,
-      );
-
-      applyTimelineSupportData(nextTimelineData);
-      setBookingsData((current) => {
-        const preserved = current.filter((item) => getBookingSeriesName(item) !== series);
-        return [...preserved, ...nextTimelineData.bookingsData];
-      });
-    } finally {
-      setLoadingBookingSeries((current) => current.filter((item) => item !== series));
-    }
-  };
-
-  const fetchLatestBookingForManager = async (booking: Booking) => {
-    if (activeTab !== "bookings") {
-      return bookingsData.find((item) => item.id === booking.id) ?? booking;
-    }
-
-    const series = getBookingSeriesName(booking);
-    const loadedCount = groupedBySeries[series]?.length ?? 0;
-    setLoadingManageBookingId(booking.id);
-    try {
-      const nextTimelineData = await runTimelineApi("Loading latest booking details...", () =>
+      const nextTimelineData = await runTimelineApi(loadingLabel, () =>
         mockApi.getBookingsData({
           ...buildBookingsTimelineQuery(),
           loadSeries: series,
           seriesSkip: 0,
-          seriesTake: Math.max(loadedCount, BOOKING_SERIES_PAGE_SIZE),
+          seriesTake: loadedCount,
         }),
-      false,
+      showLoadingOverlay,
       );
 
       applyTimelineSupportData(nextTimelineData);
@@ -924,6 +898,27 @@ export function Timeline() {
       });
 
       return resolveActiveAssignmentBooking(nextTimelineData, booking) ?? booking;
+    } finally {
+      setLoadingBookingSeries((current) => current.filter((item) => item !== series));
+    }
+  };
+
+  const refreshBookingSeriesPage = async (booking: Booking | null) => {
+    if (!booking || activeTab !== "bookings") {
+      return;
+    }
+
+    await refreshLoadedBookingSeries(booking, "Refreshing booking data...");
+  };
+
+  const fetchLatestBookingForManager = async (booking: Booking) => {
+    if (activeTab !== "bookings") {
+      return bookingsData.find((item) => item.id === booking.id) ?? booking;
+    }
+
+    setLoadingManageBookingId(booking.id);
+    try {
+      return await refreshLoadedBookingSeries(booking, "Loading latest booking details...");
     } finally {
       setLoadingManageBookingId((current) => (current === booking.id ? null : current));
     }
@@ -1454,6 +1449,8 @@ export function Timeline() {
   };
 
   const handleDismissBookingManager = () => {
+    const bookingToRefresh = activeAssignmentBooking;
+    const shouldRefreshSeries = bookingManagerDirty;
     setActiveAssignmentBooking(null);
     setBookingManagerDirty(false);
     setSelectedItemsToAssign(new Set());
@@ -1461,6 +1458,9 @@ export function Timeline() {
     setSelectedGuideId(null);
     setSelectedGuideShiftCode(null);
     setEmailComposerState(null);
+    if (shouldRefreshSeries) {
+      void refreshBookingSeriesPage(bookingToRefresh);
+    }
   };
 
   const handleRequestGuideStatusChange = (bookingId: string, guideName: string, isConfirmed: boolean) => {
