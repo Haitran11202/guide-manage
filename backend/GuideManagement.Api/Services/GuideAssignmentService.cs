@@ -56,6 +56,7 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
                 var guideName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1).Trim();
                 var busyShift = reader.IsDBNull(2) ? null : reader.GetString(2);
                 var hasBusyRow = !reader.IsDBNull(3) && reader.GetInt32(3) == 1;
+                var busyDate = reader.IsDBNull(4) ? (DateTime?)null : reader.GetDateTime(4).Date;
 
                 guideNames[guideId] = guideName;
                 if (!busyShiftsByGuide.TryGetValue(guideId, out var guideBusyShifts))
@@ -64,7 +65,10 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
                     busyShiftsByGuide[guideId] = guideBusyShifts;
                 }
 
-                foreach (var shiftCode in ExpandBusyShiftCodes(busyShift, hasBusyRow, shiftColumnSql is not null))
+                foreach (var shiftCode in ExpandBusyShiftCodes(
+                    busyShift,
+                    hasBusyRow && busyDate.HasValue && busyDate.Value == arrDate.Date,
+                    shiftColumnSql is not null))
                 {
                     guideBusyShifts.Add(shiftCode);
                 }
@@ -756,7 +760,8 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
             g.Pid,
             LTRIM(RTRIM(ISNULL(g.Guide, ''))) AS GuideName,
             CAST(gb.{shiftColumnSql} AS varchar(10)) AS BusyShiftCode,
-            CASE WHEN gb.Pid IS NULL THEN 0 ELSE 1 END AS HasBusyRow
+            CASE WHEN gb.Pid IS NULL THEN 0 ELSE 1 END AS HasBusyRow,
+            CAST(gb.[Date] AS date) AS BusyDate
         FROM dbo.M_SupplierGuide g
         LEFT JOIN dbo.M_GuideBusy gb
             ON gb.SupplierGuideXid = g.Pid
@@ -769,7 +774,8 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
             g.Pid,
             LTRIM(RTRIM(ISNULL(g.Guide, ''))) AS GuideName,
             CAST(NULL AS varchar(10)) AS BusyShiftCode,
-            CASE WHEN gb.Pid IS NULL THEN 0 ELSE 1 END AS HasBusyRow
+            CASE WHEN gb.Pid IS NULL THEN 0 ELSE 1 END AS HasBusyRow,
+            CAST(gb.[Date] AS date) AS BusyDate
         FROM dbo.M_SupplierGuide g
         LEFT JOIN dbo.M_GuideBusy gb
             ON gb.SupplierGuideXid = g.Pid
