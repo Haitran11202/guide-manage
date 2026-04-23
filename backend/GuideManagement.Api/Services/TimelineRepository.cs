@@ -80,7 +80,9 @@ public sealed class TimelineRepository(
                 guideStatusesByBooking[relation.BookingId] = bookingGuideStatuses;
             }
 
-            bookingGuideStatuses[relation.GuideId] = relation.AssignStatus;
+            bookingGuideStatuses[relation.GuideId] = bookingGuideStatuses.TryGetValue(relation.GuideId, out var existingStatus)
+                ? Math.Min(existingStatus, relation.AssignStatus)
+                : relation.AssignStatus;
 
             if (relation.AssignStatus == 2)
             {
@@ -389,6 +391,12 @@ public sealed class TimelineRepository(
 
         const string sql = """
             DECLARE @ResXid int;
+            DECLARE @CurrentAssignments TABLE
+            (
+                ResHolidayXid int NOT NULL,
+                CurrentGuideId int NULL
+            );
+
             SELECT TOP (1) @ResXid = rh.ResXid
             FROM dbo.Res_Holidays rh
             WHERE rh.Pid = @BookingPid;
@@ -398,34 +406,37 @@ public sealed class TimelineRepository(
                 RETURN;
             END;
 
-            ;WITH CurrentAssignments AS
+            INSERT INTO @CurrentAssignments (ResHolidayXid, CurrentGuideId)
+            SELECT
+                rh.Pid AS ResHolidayXid,
+                COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS CurrentGuideId
+            FROM dbo.Res_Holidays rh
+            OUTER APPLY
             (
-                SELECT
-                    rh.Pid AS ResHolidayXid,
-                    COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS CurrentGuideId
-                FROM dbo.Res_Holidays rh
-                OUTER APPLY
-                (
-                    SELECT TOP (1)
-                        hg.SupplierGuideXid
-                    FROM dbo.Res_HolidayGuide hg
-                    WHERE hg.ResHolidayXid = rh.Pid
-                      AND hg.SupplierGuideXid IS NOT NULL
-                    ORDER BY hg.Pid DESC
-                ) latestGuide
-                WHERE rh.ResXid = @ResXid
-            )
+                SELECT TOP (1)
+                    hg.SupplierGuideXid
+                FROM dbo.Res_HolidayGuide hg
+                WHERE hg.ResHolidayXid = rh.Pid
+                  AND hg.SupplierGuideXid IS NOT NULL
+                ORDER BY hg.Pid DESC
+            ) latestGuide
+            WHERE rh.ResXid = @ResXid;
+
+            SELECT currentAssignment.ResHolidayXid
+            FROM @CurrentAssignments currentAssignment
+            WHERE currentAssignment.CurrentGuideId = @GuideId;
+
             DELETE hg
             FROM dbo.Res_HolidayGuide hg
-            INNER JOIN CurrentAssignments currentAssignment
+            INNER JOIN @CurrentAssignments currentAssignment
                 ON currentAssignment.ResHolidayXid = hg.ResHolidayXid
             WHERE currentAssignment.CurrentGuideId = @GuideId
-              AND hg.SupplierGuideXid = @GuideId;
+              AND hg.ResHolidayXid = currentAssignment.ResHolidayXid;
 
             UPDATE rh
             SET rh.GuideXid = NULL
             FROM dbo.Res_Holidays rh
-            INNER JOIN CurrentAssignments currentAssignment
+            INNER JOIN @CurrentAssignments currentAssignment
                 ON currentAssignment.ResHolidayXid = rh.Pid
             WHERE currentAssignment.CurrentGuideId = @GuideId
               AND rh.GuideXid = @GuideId;
@@ -433,7 +444,7 @@ public sealed class TimelineRepository(
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await connection.ExecuteAsync(
+        var affectedServiceIds = (await connection.QueryAsync<int>(
             new CommandDefinition(
                 sql,
                 new
@@ -441,15 +452,13 @@ public sealed class TimelineRepository(
                     BookingPid = bookingPid,
                     GuideId = guideId.Value
                 },
-                cancellationToken: cancellationToken));
+                cancellationToken: cancellationToken))).ToArray();
 
         var timeline = await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         bookingManagementState.ItemManagedBookingIds[bookingId] = 1;
-        foreach (var key in timeline.ItemAssignments
-                     .Where(entry => entry.Key.StartsWith($"{bookingId}-", StringComparison.OrdinalIgnoreCase) && entry.Value == guideId.Value)
-                     .Select(entry => entry.Key))
+        foreach (var serviceId in affectedServiceIds)
         {
-            bookingManagementState.ItemAssignmentOverrides[key] = 0;
+            bookingManagementState.ItemAssignmentOverrides[serviceId.ToString()] = 0;
         }
 
         bookingManagementState.GuideTimeExceptionOverrides.TryRemove($"{bookingId}-{guideId.Value}", out _);
@@ -602,9 +611,8 @@ public sealed class TimelineRepository(
             SELECT
                 g.Pid AS Id,
                 CAST(ISNULL(g.Guide, '') AS nvarchar(255)) AS Name,
-                LTRIM(RTRIM(ISNULL(g.ExactCode, ''))) AS ExactCode
+                LTRIM(RTRIM(ISNULL(g.Appearance, ''))) AS Appearance
             FROM dbo.M_SupplierGuide g
-            WHERE @CountryXid IS NULL OR g.CountryXid = @CountryXid
             ORDER BY g.Guide;
             """;
 
@@ -615,14 +623,13 @@ public sealed class TimelineRepository(
         var rows = await connection.QueryAsync<GuideRow>(
             new CommandDefinition(
                 sql,
-                new { CountryXid = countryXid },
                 cancellationToken: cancellationToken));
 
         return rows.Select(row => new TimelineGuideDto
         {
             Id = row.Id,
             Name = row.Name,
-            Tags = string.IsNullOrWhiteSpace(row.ExactCode) ? [] : [row.ExactCode],
+            Tags = string.IsNullOrWhiteSpace(row.Appearance) ? [] : [row.Appearance],
             BusyDates = busyDatesByGuide.TryGetValue(row.Id, out var busyDates) ? busyDates : [],
             TimeExceptions = []
         }).ToArray();
@@ -655,7 +662,10 @@ public sealed class TimelineRepository(
                 latestGuide.SendSMS,
                 latestGuide.Message,
                 latestGuide.SendSMSDate,
-                COALESCE(latestGuide.AssignStatus, CASE WHEN rh.GuideXid IS NOT NULL THEN 2 ELSE 1 END) AS AssignStatus
+                CASE
+                    WHEN rh.StatusXid = 4 THEN 2
+                    ELSE COALESCE(latestGuide.AssignStatus, CASE WHEN rh.GuideXid IS NOT NULL THEN 2 ELSE 1 END)
+                END AS AssignStatus
             FROM dbo.Res_Holidays rh
             LEFT JOIN LatestHolidayGuide latestGuide
                 ON latestGuide.ResHolidayXid = rh.Pid
@@ -956,7 +966,7 @@ public sealed class TimelineRepository(
     private static bool IsConfirmed(string? flag)
     {
         var normalized = (flag ?? string.Empty).Trim().ToUpperInvariant();
-        return normalized is "Y" or "1" or "T";
+        return normalized is "Y" or "1" or "T" or "P" or "D" or "B";
     }
 
     private static bool MatchesBookingFilters(
@@ -1040,7 +1050,7 @@ public sealed class TimelineRepository(
         string? Holiday,
         string? Country);
 
-    private sealed record GuideRow(int Id, string Name, string ExactCode);
+    private sealed record GuideRow(int Id, string Name, string Appearance);
 
     private sealed record GuideRelationRow(
         string BookingId,

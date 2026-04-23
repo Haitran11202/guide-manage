@@ -33,6 +33,8 @@ type TimelineBookingAssignmentModalProps = {
   guideSearchTerm: string;
   filteredGuidesForModal: any[];
   selectedGuideId: number | null;
+  availabilityLoading: boolean;
+  availabilityError: string | null;
   showUnassignDialog: boolean;
   pendingUnassignGuide: string | null;
   canUnassignSelectedItems: boolean;
@@ -86,6 +88,8 @@ export function TimelineBookingAssignmentModal({
   guideSearchTerm,
   filteredGuidesForModal,
   selectedGuideId,
+  availabilityLoading,
+  availabilityError,
   showUnassignDialog,
   pendingUnassignGuide,
   canUnassignSelectedItems,
@@ -258,9 +262,12 @@ export function TimelineBookingAssignmentModal({
                           <button
                             onClick={(event) => {
                               event.stopPropagation();
-                              onToggleGuideConfirmation(guideName, isConfirmed);
+                              if (!isConfirmed) {
+                                onToggleGuideConfirmation(guideName, isConfirmed);
+                              }
                             }}
-                            className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-[#333]"
+                            disabled={isConfirmed}
+                            className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-[#333] disabled:cursor-not-allowed disabled:opacity-70"
                           >
                             <span
                               className={`rounded-full border px-3 py-1 ${isConfirmed
@@ -268,7 +275,7 @@ export function TimelineBookingAssignmentModal({
                                   : "border-[#F3796A]/30 bg-[#F3796A]/10 text-[#F3796A]"
                                 }`}
                             >
-                              {isConfirmed ? "Confirm" : "Waiting"}
+                              {isConfirmed ? "Confirmed" : "Confirm"}
                             </span>
                           </button>
 
@@ -470,6 +477,11 @@ export function TimelineBookingAssignmentModal({
                     placeholder="Search guides by name or tag..."
                     className="w-full bg-white border border-[#C4E8FF] rounded-xl pl-10 py-3 text-xs font-bold text-[#333] placeholder:text-[#333]/45 focus:ring-2 focus:ring-[#F3796A] outline-none"
                   />
+                </div>
+                <div className="mt-3 text-[10px] font-bold text-[#333]/55">
+                  {availabilityLoading
+                    ? "Checking guide availability for the selected services..."
+                    : availabilityError || "Only guides free on every selected service date are selectable. Shift is fixed as ALL."}
                 </div>
               </div>
               <div className="p-4 overflow-auto flex-1 space-y-2 bg-[#C4E8FF]/10">

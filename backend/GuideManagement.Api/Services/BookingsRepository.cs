@@ -113,7 +113,7 @@ public sealed class BookingsRepository(
             .GroupBy(row => row.GuideId)
             .ToDictionary(
                 group => group.Key.ToString(),
-                group => group.Max(row => row.AssignStatus),
+                group => group.Min(row => row.AssignStatus),
                 StringComparer.OrdinalIgnoreCase);
         ApplyManagerItemAssignmentOverrides(itemAssignments, managerItemIds);
         var itemTimeSlots = BuildManagerItemTimeSlots(managerItemIds);
@@ -164,7 +164,9 @@ public sealed class BookingsRepository(
                 guideStatusesByBooking[relation.BookingId] = bookingGuideStatuses;
             }
 
-            bookingGuideStatuses[relation.GuideId] = relation.AssignStatus;
+            bookingGuideStatuses[relation.GuideId] = bookingGuideStatuses.TryGetValue(relation.GuideId, out var existingStatus)
+                ? Math.Min(existingStatus, relation.AssignStatus)
+                : relation.AssignStatus;
 
             if (relation.AssignStatus == 2)
             {
@@ -483,7 +485,10 @@ ORDER BY res.ArrDate, res.Pid;";
                 latestGuide.SendSMS,
                 latestGuide.Message,
                 latestGuide.SendSMSDate,
-                COALESCE(latestGuide.AssignStatus, CASE WHEN rh.GuideXid IS NOT NULL THEN 2 ELSE 1 END) AS AssignStatus
+                CASE
+                    WHEN rh.StatusXid = 4 THEN 2
+                    ELSE COALESCE(latestGuide.AssignStatus, CASE WHEN rh.GuideXid IS NOT NULL THEN 2 ELSE 1 END)
+                END AS AssignStatus
             FROM dbo.Res_Holidays rh
             LEFT JOIN LatestHolidayGuide latestGuide
                 ON latestGuide.ResHolidayXid = rh.Pid
@@ -530,7 +535,10 @@ ORDER BY res.ArrDate, res.Pid;";
             SELECT
                 rh.Pid AS ServicePid,
                 COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS GuideId,
-                COALESCE(latestGuide.AssignStatus, CASE WHEN rh.GuideXid IS NOT NULL THEN 2 END, 1) AS AssignStatus
+                CASE
+                    WHEN rh.StatusXid = 4 THEN 2
+                    ELSE COALESCE(latestGuide.AssignStatus, CASE WHEN rh.GuideXid IS NOT NULL THEN 2 END, 1)
+                END AS AssignStatus
             FROM dbo.Res_Holidays rh
             OUTER APPLY
             (
@@ -795,7 +803,7 @@ ORDER BY res.ArrDate, res.Pid;";
     private static bool IsConfirmed(string? flag)
     {
         var normalized = (flag ?? string.Empty).Trim().ToUpperInvariant();
-        return normalized is "Y" or "1" or "T";
+        return normalized is "Y" or "1" or "T" or "P" or "D" or "B";
     }
 
     private static string BuildManagerServiceLabel(string? serviceName)

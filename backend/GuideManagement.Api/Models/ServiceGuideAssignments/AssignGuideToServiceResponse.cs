@@ -5,6 +5,9 @@ public sealed class AssignGuideToServiceResponse
     public int Pid { get; init; }
     public int ResHolidayXid { get; init; }
     public int SupplierGuideXid { get; init; }
+    public DateTime ArrDate { get; init; }
+    public string MaCa { get; init; } = "ALL";
+    public string BusyStatus { get; init; } = "P";
     public int AssignStatus { get; init; }
     public int AssignedBy { get; init; }
     public DateTime AssignedDateUtc { get; init; }

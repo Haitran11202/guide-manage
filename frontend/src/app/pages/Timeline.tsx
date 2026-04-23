@@ -25,7 +25,15 @@ import { buildGuideEmailKey, mockApi } from "../mock/api";
 import { TimelineBookingAssignmentModal } from "../components/timeline/TimelineBookingAssignmentModal";
 import { TimelineBookingsTab } from "../components/timeline/TimelineBookingsTab";
 import { LoadingOverlay } from "../components/ui/LoadingOverlay";
-import type { BookingManagerDay, CountryOption, GuideEmailRecord, GuideTimeException, ServiceDayPart, TimelineBookingSeries } from "../mock/types";
+import type {
+  BookingManagerDay,
+  CountryOption,
+  GuideEmailRecord,
+  GuideTimeException,
+  ServiceDayPart,
+  ShiftCode,
+  TimelineBookingSeries,
+} from "../mock/types";
 
 type Booking = {
   id: string;
@@ -167,6 +175,17 @@ const getDynamicallyCalculatedStatus = (guide: any, targetIntervals: { start: nu
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const GUIDES_PER_PAGE = 20;
 const DEFAULT_COUNTRY_NAME = "Japan";
+const SHIFT_OPTIONS: Array<{ value: ShiftCode; label: string }> = [
+  { value: "ALL", label: "All day" },
+  { value: "M1", label: "Morning 1" },
+  { value: "M2", label: "Morning 2" },
+  { value: "A1", label: "Afternoon 1" },
+  { value: "A2", label: "Afternoon 2" },
+  { value: "E1", label: "Evening 1" },
+  { value: "E2", label: "Evening 2" },
+  { value: "N1", label: "Night 1" },
+  { value: "N2", label: "Night 2" },
+];
 
 const formatDateInputValue = (value: Date) => {
   const year = value.getFullYear();
@@ -470,6 +489,16 @@ export function Timeline() {
     }
   };
 
+  const refreshTimelineAndBookingManager = async (booking: Booking | null) => {
+    const nextTimelineData = await fetchTimelineData();
+    if (!booking) {
+      return null;
+    }
+
+    const refreshedBooking = resolveActiveAssignmentBooking(nextTimelineData, booking) ?? booking;
+    return await refreshActiveBookingManager(refreshedBooking);
+  };
+
   const allCountries = useMemo(() => {
     if (countryOptions.length > 0) {
       return countryOptions.map((country) => country.name).sort((left, right) => left.localeCompare(right));
@@ -531,6 +560,8 @@ export function Timeline() {
     }
 
     const guideName = guidesData.find((guide) => guide.id === queryGuideId)?.name;
+    console.log(guideName);
+    
     if (guideName) {
       setFilterGuide(guideName);
       setGuidePage(1);
@@ -582,38 +613,10 @@ export function Timeline() {
   };
 
   const filteredGuidesList = useMemo(() => {
-    return guidesWithTours.filter((g) => {
-      if (filterGuide && !g.name.toLowerCase().includes(filterGuide.toLowerCase())) return false;
-      if (filterSearch || filterClient || filterDateFrom || filterDateTo || filterSeries !== "all") {
-        const hasMatchingTour = g.tours.some((t: any) => {
-          const matchSearch = filterSearch ? (t.ref.toLowerCase().includes(filterSearch.toLowerCase()) || t.groupName.toLowerCase().includes(filterSearch.toLowerCase())) : true;
-          const matchClient = filterClient ? t.client.toLowerCase().includes(filterClient.toLowerCase()) : true;
-
-          const sName = getBookingSeriesName(t);
-          const isSeriesTour = sName !== "NO SERIES";
-          const matchSeries = filterSeries === "series" ? isSeriesTour : filterSeries === "noseries" ? !isSeriesTour : true;
-
-          let matchDate = true;
-          if (filterDateFrom || filterDateTo) {
-            const tStart = new Date(`${t.startDay}T00:00:00`).getTime();
-            const tEnd = tStart + (t.duration - 1) * 86400000;
-            if (filterDateFrom && filterDateTo) {
-              const fStart = new Date(`${filterDateFrom}T00:00:00`).getTime();
-              const fEnd = new Date(`${filterDateTo}T00:00:00`).getTime();
-              matchDate = tStart <= fEnd && tEnd >= fStart;
-            } else if (filterDateFrom) {
-              matchDate = tEnd >= new Date(`${filterDateFrom}T00:00:00`).getTime();
-            } else if (filterDateTo) {
-              matchDate = tStart <= new Date(`${filterDateTo}T00:00:00`).getTime();
-            }
-          }
-          return matchSearch && matchClient && matchDate && matchSeries;
-        });
-        if (!hasMatchingTour) return false;
-      }
-      return true;
-    });
-  }, [guidesWithTours, filterGuide, filterSearch, filterClient, filterDateFrom, filterDateTo, filterSeries]);
+    return guidesWithTours.filter((guide) =>
+      filterGuide ? guide.name.toLowerCase().includes(filterGuide.toLowerCase()) : true,
+    );
+  }, [guidesWithTours, filterGuide]);
 
   const paginatedGuides = useMemo(() => filteredGuidesList.slice((guidePage - 1) * GUIDES_PER_PAGE, guidePage * GUIDES_PER_PAGE), [filteredGuidesList, guidePage]);
   const totalGuidePages = Math.max(1, Math.ceil(filteredGuidesList.length / GUIDES_PER_PAGE));
@@ -628,6 +631,7 @@ export function Timeline() {
 
   const [newBusyFrom, setNewBusyFrom] = useState("");
   const [newBusyTo, setNewBusyTo] = useState("");
+  const [newBusyShiftCode, setNewBusyShiftCode] = useState<ShiftCode>("ALL");
   const [pendingDeleteBusyId, setPendingDeleteBusyId] = useState<string | null>(null);
   const [pendingDeleteBusyGuideId, setPendingDeleteBusyGuideId] = useState<number | null>(null);
 
@@ -638,6 +642,9 @@ export function Timeline() {
   const [showGuideSelector, setShowGuideSelector] = useState(false);
   const [selectedGuideId, setSelectedGuideId] = useState<number | null>(null);
   const [guideSearchTerm, setGuideSearchTerm] = useState("");
+  const [availableGuideIds, setAvailableGuideIds] = useState<Set<number>>(new Set());
+  const [availabilityLoading, setAvailabilityLoading] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
 
   const [showUnassignDialog, setShowUnassignDialog] = useState(false);
   const [pendingUnassignGuide, setPendingUnassignGuide] = useState<string | null>(null);
@@ -663,18 +670,60 @@ export function Timeline() {
     return event.guideStatus === "confirmed" ? "bg-[#1D3663]" : "bg-[#F3796A]";
   };
 
-  const yearStartMs = useMemo(() => new Date(currentYear, 0, 1).getTime(), [currentYear]);
-  const yearEndMs = useMemo(() => new Date(currentYear + 1, 0, 1).getTime(), [currentYear]);
-  const totalDaysInYear = useMemo(() => Math.round((yearEndMs - yearStartMs) / 86400000), [yearEndMs, yearStartMs]);
+  const calendarRange = useMemo(() => {
+    const start = filterDateFrom
+      ? new Date(`${filterDateFrom}T00:00:00`)
+      : new Date(currentYear, 0, 1);
+    const end = filterDateTo
+      ? new Date(`${filterDateTo}T00:00:00`)
+      : new Date(currentYear, 11, 31);
 
-  const allDaysInYear = useMemo(() => {
-    const days = [];
-    for (let m = 0; m < 12; m++) {
-      const daysInMonth = new Date(currentYear, m + 1, 0).getDate();
-      for (let d = 1; d <= daysInMonth; d++) days.push(new Date(currentYear, m, d));
+    if (start.getTime() <= end.getTime()) {
+      return { start, end };
+    }
+
+    return { start: end, end: start };
+  }, [currentYear, filterDateFrom, filterDateTo]);
+
+  const rangeStartMs = useMemo(() => calendarRange.start.getTime(), [calendarRange.start]);
+  const rangeEndExclusiveMs = useMemo(() => {
+    const end = new Date(calendarRange.end);
+    end.setDate(end.getDate() + 1);
+    return end.getTime();
+  }, [calendarRange.end]);
+  const totalDaysInRange = useMemo(
+    () => Math.max(1, Math.round((rangeEndExclusiveMs - rangeStartMs) / 86400000)),
+    [rangeEndExclusiveMs, rangeStartMs],
+  );
+
+  const displayedDays = useMemo(() => {
+    const days: Date[] = [];
+    const cursor = new Date(calendarRange.start);
+    while (cursor.getTime() <= calendarRange.end.getTime()) {
+      days.push(new Date(cursor));
+      cursor.setDate(cursor.getDate() + 1);
     }
     return days;
-  }, [currentYear]);
+  }, [calendarRange.end, calendarRange.start]);
+
+  const displayedMonthSegments = useMemo(() => {
+    const segments: Array<{ key: string; label: string; days: number }> = [];
+    displayedDays.forEach((date) => {
+      const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+      const lastSegment = segments[segments.length - 1];
+      if (lastSegment?.key === monthKey) {
+        lastSegment.days += 1;
+        return;
+      }
+
+      segments.push({
+        key: monthKey,
+        label: `${MONTHS[date.getMonth()]} ${date.getFullYear()}`,
+        days: 1,
+      });
+    });
+    return segments;
+  }, [displayedDays]);
 
   const isDaily = zoomLevel === 3;
   const currentCellWidth = zoomLevel === 3 ? 40 : 20;
@@ -682,8 +731,8 @@ export function Timeline() {
   const timelineTrackStyle = useMemo(() => {
     if (zoomLevel === 1) return { flex: 1, minWidth: "800px" };
     if (zoomLevel === 2) return { width: "250vw", flexShrink: 0 };
-    return { width: `${totalDaysInYear * currentCellWidth}px`, flexShrink: 0 };
-  }, [zoomLevel, totalDaysInYear, currentCellWidth]);
+    return { width: `${totalDaysInRange * currentCellWidth}px`, flexShrink: 0 };
+  }, [zoomLevel, totalDaysInRange, currentCellWidth]);
 
   useEffect(() => {
     const syncVisibleRange = (force = false) => {
@@ -701,8 +750,8 @@ export function Timeline() {
       const leftIndex = Math.floor(scrollLeft / currentCellWidth);
       const rightIndex = Math.floor((scrollLeft + clientWidth - 260) / currentCellWidth);
 
-      const safeLeftIndex = Math.max(0, Math.min(allDaysInYear.length - 1, leftIndex));
-      const safeRightIndex = Math.max(0, Math.min(allDaysInYear.length - 1, rightIndex));
+      const safeLeftIndex = Math.max(0, Math.min(displayedDays.length - 1, leftIndex));
+      const safeRightIndex = Math.max(0, Math.min(displayedDays.length - 1, rightIndex));
 
       const formatDate = (date: Date) => {
         if (!date) return "";
@@ -712,8 +761,8 @@ export function Timeline() {
         return `${y}-${m}-${d}`;
       };
 
-      setVisibleDateStart(formatDate(allDaysInYear[safeLeftIndex]));
-      setVisibleDateEnd(formatDate(allDaysInYear[safeRightIndex]));
+      setVisibleDateStart(formatDate(displayedDays[safeLeftIndex]));
+      setVisibleDateEnd(formatDate(displayedDays[safeRightIndex]));
     };
 
     const container = timelineScrollRef.current;
@@ -725,7 +774,7 @@ export function Timeline() {
         container.removeEventListener('scroll', handleScroll);
       };
     }
-  }, [zoomLevel, currentYear, allDaysInYear, currentCellWidth, isDaily]);
+  }, [zoomLevel, currentYear, displayedDays, currentCellWidth, isDaily]);
 
   useEffect(() => {
     if (activeTab !== "calendar") {
@@ -985,6 +1034,23 @@ export function Timeline() {
     });
   }, [activeAssignmentBooking, itemAssignments, itemTimeSlots, guidesData]);
 
+  const serviceDateByItemId = useMemo(() => {
+    const result = new Map<string, string>();
+    dailyColumns.forEach((day: any) => {
+      day.items.forEach((item: any) => {
+        result.set(item.id, day.dateStr);
+      });
+    });
+    return result;
+  }, [dailyColumns]);
+
+  const getTargetServiceIds = () =>
+    (selectedItemsToAssign.size > 0
+      ? Array.from(selectedItemsToAssign)
+      : dailyColumns.flatMap((day: any) => day.items.map((item: any) => item.id)))
+      .map((itemId) => Number(itemId))
+      .filter((itemId) => Number.isInteger(itemId) && itemId > 0);
+
   const handleItemMouseDown = (itemId: string) => {
     setIsDragging(true); const mode = selectedItemsToAssign.has(itemId) ? "remove" : "add";
     setDragMode(mode); setSelectedItemsToAssign(prev => { const next = new Set(prev); mode === "add" ? next.add(itemId) : next.delete(itemId); return next; });
@@ -1039,21 +1105,46 @@ export function Timeline() {
     }
     if (overlappingTour) { alert(`The guide is already on tour for "${overlappingTour.groupName}" on some of those dates. You cannot add a busy block.`); return; }
 
-    const nextTimelineData = await runTimelineApi("Saving busy dates...", () =>
-      mockApi.addGuideBusyDate(guideDetailsModalId, newBusyFrom, newBusyTo),
-    );
-    applyTimelineData(nextTimelineData);
-    setNewBusyFrom(""); setNewBusyTo("");
+    const busyDatesToCreate: string[] = [];
+    const cursor = new Date(`${newBusyFrom}T00:00:00`);
+    const end = new Date(`${newBusyTo}T00:00:00`);
+    while (cursor.getTime() <= end.getTime()) {
+      busyDatesToCreate.push(toDateKey(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    await runTimelineApi("Saving busy dates...", async () => {
+      for (const date of busyDatesToCreate) {
+        await mockApi.markGuidePersonalBusy(guideDetailsModalId, date, newBusyShiftCode);
+      }
+    });
+
+    await fetchTimelineData();
+    setNewBusyFrom("");
+    setNewBusyTo("");
+    setNewBusyShiftCode("ALL");
   };
 
   const handleRemoveBusyDate = (id: string, guideId: number) => { setPendingDeleteBusyId(id); setPendingDeleteBusyGuideId(guideId); };
 
   const handleConfirmUnassignGuide = async () => {
     if (!activeAssignmentBooking || !pendingUnassignGuide) return;
-    await runTimelineApi("Unassigning guide...", () =>
-      mockApi.unassignGuideFromBooking(activeAssignmentBooking.id, pendingUnassignGuide),
-    );
-    const updatedBooking = await refreshActiveBookingManager(activeAssignmentBooking);
+    const guideId = guidesData.find((guide) => guide.name === pendingUnassignGuide)?.id;
+    if (!guideId) return;
+
+    const serviceIds = dailyColumns
+      .flatMap((day: any) => day.items)
+      .filter((item: any) => itemAssignments[item.id] === guideId)
+      .map((item: any) => Number(item.id))
+      .filter((serviceId) => Number.isInteger(serviceId) && serviceId > 0);
+
+    await runTimelineApi("Unassigning guide...", async () => {
+      for (const serviceId of serviceIds) {
+        await mockApi.unassignGuideFromService(serviceId, guideId);
+      }
+    });
+
+    const updatedBooking = await refreshTimelineAndBookingManager(activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
     setBookingManagerDirty(true);
     setPendingUnassignGuide(null); setShowUnassignDialog(false);
@@ -1085,16 +1176,91 @@ export function Timeline() {
     return Array.from(dates).sort();
   };
 
-  const getTargetItemIds = () =>
-    selectedItemsToAssign.size > 0
-      ? Array.from(selectedItemsToAssign)
-      : dailyColumns.flatMap((day: any) => day.items.map((item: any) => item.id));
+  const getTargetItemIds = () => Array.from(selectedItemsToAssign);
 
-  const getGuideAssignedDatesForBooking = (guideId: number, bookingId: string, bookingStartDay: string) => {
-    const itemIds = Object.entries(itemAssignments)
-      .filter(([itemId, assignedGuideId]) => itemId.startsWith(`${bookingId}-`) && assignedGuideId === guideId)
-      .map(([itemId]) => itemId);
-    return getDatesForItemIds(bookingStartDay, itemIds);
+  useEffect(() => {
+    if (!showGuideSelector || !activeAssignmentBooking) {
+      setAvailabilityLoading(false);
+      setAvailabilityError(null);
+      setAvailableGuideIds(new Set());
+      return;
+    }
+
+    const targetItemIds = getTargetItemIds();
+    const targetDates = Array.from(
+      new Set(
+        targetItemIds
+          .map((itemId) => serviceDateByItemId.get(itemId))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+
+    if (targetDates.length === 0) {
+      setAvailabilityError("No service dates were found for the selected services.");
+      setAvailableGuideIds(new Set());
+      return;
+    }
+
+    let active = true;
+    setAvailabilityLoading(true);
+    setAvailabilityError(null);
+
+    void (async () => {
+      try {
+        const availabilityResponses = await Promise.all(
+          targetDates.map((date) => mockApi.searchAvailableGuides(date, "ALL")),
+        );
+
+        if (!active) {
+          return;
+        }
+
+        const nextAvailableGuideIds = availabilityResponses.reduce<Set<number>>((current, guides, index) => {
+          const guideIds = new Set(guides.map((guide) => guide.guideId));
+          if (index === 0) {
+            return guideIds;
+          }
+
+          return new Set(Array.from(current).filter((guideId) => guideIds.has(guideId)));
+        }, new Set<number>());
+
+        setAvailableGuideIds(nextAvailableGuideIds);
+      } catch (error) {
+        if (!active) {
+          return;
+        }
+
+        setAvailableGuideIds(new Set());
+        setAvailabilityError(error instanceof Error ? error.message : "Unable to load available guides.");
+      } finally {
+        if (active) {
+          setAvailabilityLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [activeAssignmentBooking, selectedItemsToAssign, serviceDateByItemId, showGuideSelector]);
+
+  useEffect(() => {
+    if (selectedGuideId && !availableGuideIds.has(selectedGuideId)) {
+      setSelectedGuideId(null);
+    }
+  }, [availableGuideIds, selectedGuideId]);
+
+  const getGuideAssignedDatesForBooking = (guideId: number) => {
+    return Array.from(
+      new Set(
+        dailyColumns
+          .flatMap((day: any) =>
+            day.items
+              .filter((item: any) => itemAssignments[item.id] === guideId)
+              .map(() => day.dateStr),
+          ),
+      ),
+    ).sort();
   };
 
   const buildGuideOccupation = (guide: any, excludedItemIds = new Set<string>()) => {
@@ -1166,71 +1332,18 @@ export function Timeline() {
   };
 
   const getGuideAvailability = (guide: any) => {
-    if (!activeAssignmentBooking) {
+    if (!showGuideSelector) {
       return { label: "Available", color: "text-[#1D3663]", selectable: true, requiresTimeInput: false };
     }
 
-    const targetItemIds = getTargetItemIds();
-    const targetDates = getDatesForItemIds(activeAssignmentBooking.startDay, targetItemIds);
-    const occupation = buildGuideOccupation(guide, new Set(targetItemIds));
-
-    let selectable = true;
-    let commonAvailableSlots = new Set<string>(["morning", "afternoon", "evening"]);
-    const partialLabels = new Set<string>();
-
-    targetDates.forEach((dateKey) => {
-      if (occupation.fullDayBlocks.has(dateKey)) {
-        selectable = false;
-        commonAvailableSlots = new Set();
-        return;
-      }
-
-      const occupiedSlots = occupation.occupiedSlots.get(dateKey) ?? new Set<string>();
-      const availableSlots = new Set<string>(
-        ["morning", "afternoon", "evening"].filter((slot) => !occupiedSlots.has(slot)),
-      );
-      commonAvailableSlots = new Set(
-        Array.from(commonAvailableSlots).filter((slot) => availableSlots.has(slot)),
-      );
-
-      const ranges = (occupation.timeRanges.get(dateKey) ?? []).sort((left, right) => left.startHour - right.startHour);
-      if (ranges.length > 0) {
-        partialLabels.add(ranges.map((range) => formatHourRange(range.startHour, range.endHour)).join(", "));
-      }
-    });
-
-    if (!selectable) {
-      if (commonAvailableSlots.size === 0) {
-        return { label: "On Tour", color: "text-[#F3796A]", selectable: false, requiresTimeInput: false };
-      }
-
-      return {
-        label: `${Array.from(commonAvailableSlots).map(formatServiceDayPartLabel).join("/")} only`,
-        color: "text-[#F3796A]",
-        selectable: false,
-        requiresTimeInput: false,
-      };
+    if (availabilityLoading) {
+      return { label: "Checking...", color: "text-[#1D3663]", selectable: false, requiresTimeInput: false };
     }
 
-    if (partialLabels.size > 0) {
-      return {
-        label:
-          partialLabels.size === 1
-            ? `Available except ${Array.from(partialLabels)[0]}`
-            : "Available except scheduled hours",
-        color: "text-[#1D3663]",
-        selectable: true,
-        requiresTimeInput: true,
-      };
-    }
-
-    const slotLabel = commonAvailableSlots.size === 3
-      ? "Available"
-      : commonAvailableSlots.size > 0
-        ? `Available ${Array.from(commonAvailableSlots).map(formatServiceDayPartLabel).join("/")}`
-        : "Available";
-
-    return { label: slotLabel, color: "text-[#1D3663]", selectable: true, requiresTimeInput: false };
+    const isAvailable = availableGuideIds.has(guide.id);
+    return isAvailable
+      ? { label: "Available", color: "text-[#1D3663]", selectable: true, requiresTimeInput: false }
+      : { label: "Busy", color: "text-[#F3796A]", selectable: false, requiresTimeInput: false };
   };
   const handleClearBookingFilters = () => {
     setModalSearchTerm("");
@@ -1286,6 +1399,7 @@ export function Timeline() {
   };
 
   const handleRequestGuideStatusChange = (bookingId: string, guideName: string, isConfirmed: boolean) => {
+    if (isConfirmed) return;
     const booking = bookingsData.find((item) => item.id === bookingId);
     if (!booking) return;
     setPendingGuideStatusChange({
@@ -1298,17 +1412,23 @@ export function Timeline() {
 
   const handleConfirmGuideStatusChange = async () => {
     if (!pendingGuideStatusChange) return;
-    const nextTimelineData = await runTimelineApi("Updating guide status...", () =>
-      mockApi.setBookingGuideConfirmation(
-        pendingGuideStatusChange.bookingId,
-        pendingGuideStatusChange.guideName,
-        !pendingGuideStatusChange.isConfirmed,
-      ),
-    );
-    applyTimelineSupportData(nextTimelineData);
+    const guideId = guidesData.find((guide) => guide.name === pendingGuideStatusChange.guideName)?.id;
+    if (!guideId || !activeAssignmentBooking) return;
 
-    if (activeAssignmentBooking?.id === pendingGuideStatusChange.bookingId) {
-      const updatedBooking = resolveActiveAssignmentBooking(nextTimelineData, activeAssignmentBooking);
+    const serviceIds = dailyColumns
+      .flatMap((day: any) => day.items)
+      .filter((item: any) => itemAssignments[item.id] === guideId)
+      .map((item: any) => Number(item.id))
+      .filter((serviceId) => Number.isInteger(serviceId) && serviceId > 0);
+
+    await runTimelineApi("Updating guide status...", async () => {
+      for (const serviceId of serviceIds) {
+        await mockApi.confirmServiceGuide(serviceId);
+      }
+    });
+
+    const updatedBooking = await refreshTimelineAndBookingManager(activeAssignmentBooking);
+    if (updatedBooking) {
       setActiveAssignmentBooking(updatedBooking);
     }
 
@@ -1390,12 +1510,22 @@ export function Timeline() {
 
   const handleUnassignSelectedItems = async () => {
     if (!activeAssignmentBooking || selectedItemsToAssign.size === 0) return;
-    await runTimelineApi("Unassigning selected items...", () =>
-      mockApi.unassignBookingItems(
-        Array.from(selectedItemsToAssign).map((itemId) => Number(itemId)).filter((itemId) => Number.isInteger(itemId) && itemId > 0),
-      ),
-    );
-    const updatedBooking = await refreshActiveBookingManager(activeAssignmentBooking);
+    if (selectedAssignedGuideNames.guideNames.length !== 1) return;
+
+    const guideId = guidesData.find((guide) => guide.name === selectedAssignedGuideNames.guideNames[0])?.id;
+    if (!guideId) return;
+
+    const serviceIds = Array.from(selectedItemsToAssign)
+      .map((itemId) => Number(itemId))
+      .filter((itemId) => Number.isInteger(itemId) && itemId > 0);
+
+    await runTimelineApi("Unassigning selected items...", async () => {
+      for (const serviceId of serviceIds) {
+        await mockApi.unassignGuideFromService(serviceId, guideId);
+      }
+    });
+
+    const updatedBooking = await refreshTimelineAndBookingManager(activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
     setBookingManagerDirty(true);
     setSelectedItemsToAssign(new Set());
@@ -1408,7 +1538,7 @@ export function Timeline() {
     const guide = guidesWithTours.find((item: any) => item.id === guideId);
     if (!guide) return;
 
-    const dates = getGuideAssignedDatesForBooking(guideId, activeAssignmentBooking.id, activeAssignmentBooking.startDay);
+    const dates = getGuideAssignedDatesForBooking(guideId);
     const existingByDate = new Map(
       (guide.timeExceptions ?? [])
         .filter((exception) => exception.bookingId === activeAssignmentBooking.id)
@@ -1432,35 +1562,8 @@ export function Timeline() {
   };
 
   const handleSelectGuide = (guideId: number) => {
-    if (!activeAssignmentBooking) return;
-    const guide = guidesWithTours.find((item: any) => item.id === guideId);
-    if (!guide) return;
-
-    const availability = getGuideAvailability(guide);
-    if (!availability.selectable) return;
-
-    if (!availability.requiresTimeInput) {
-      setSelectedGuideId(guideId);
-      return;
-    }
-
-    const targetItemIds = getTargetItemIds();
-    const targetDates = getDatesForItemIds(activeAssignmentBooking.startDay, targetItemIds);
-    const occupation = buildGuideOccupation(guide, new Set(targetItemIds));
-    const drafts = targetDates
-      .filter((date) => (occupation.timeRanges.get(date) ?? []).length > 0)
-      .map((date) => ({ date, startHour: "", endHour: "" }));
-
-    setGuideTimingModalState({
-      mode: "select-assignment",
-      guideId,
-      guideName: guide.name,
-      bookingId: activeAssignmentBooking.id,
-      title: `New timing for ${guide.name}`,
-      submitLabel: "Assign With Timing",
-      description: "This guide already has a timed assignment on the same date. Add a non-overlapping hour range for each date below.",
-      drafts,
-    });
+    if (!availableGuideIds.has(guideId)) return;
+    setSelectedGuideId(guideId);
   };
 
   const handleGuideTimingDraftChange = (date: string, field: "startHour" | "endHour", value: string) => {
@@ -1527,34 +1630,15 @@ export function Timeline() {
       entries.push({ date: draft.date, startHour, endHour });
     }
 
-    if (guideTimingModalState.mode === "select-assignment") {
-      await runTimelineApi("Assigning guide with timing...", () =>
-        mockApi.assignBookingItems(
-          guideTimingModalState.guideId,
-          Array.from(selectedItemsToAssign).map((itemId) => Number(itemId)).filter((itemId) => Number.isInteger(itemId) && itemId > 0),
-        ),
-      );
-      nextTimelineData = await runTimelineApi("Saving timing exceptions...", () =>
-        mockApi.setGuideBookingTimeExceptions(
-          guideTimingModalState.bookingId,
-          guideTimingModalState.guideId,
-          entries,
-        ),
-      );
-      setShowGuideSelector(false);
-      setSelectedItemsToAssign(new Set());
-      setSelectedGuideId(null);
-    } else {
-      await runTimelineApi("Saving timing exceptions...", () =>
-        mockApi.setGuideBookingTimeExceptions(
-          guideTimingModalState.bookingId,
-          guideTimingModalState.guideId,
-          entries,
-        ),
-      );
-    }
+    await runTimelineApi("Saving timing exceptions...", () =>
+      mockApi.setGuideBookingTimeExceptions(
+        guideTimingModalState.bookingId,
+        guideTimingModalState.guideId,
+        entries,
+      ),
+    );
 
-    const updatedBooking = await refreshActiveBookingManager(activeAssignmentBooking);
+    const updatedBooking = await refreshTimelineAndBookingManager(activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
     setBookingManagerDirty(true);
     setGuideTimingModalState(null);
@@ -1563,13 +1647,27 @@ export function Timeline() {
   const handleConfirmAssignment = async () => {
     if (!activeAssignmentBooking || !selectedGuideId) return;
 
-    await runTimelineApi("Assigning guide...", () =>
-      mockApi.assignBookingItems(
-        selectedGuideId,
-        Array.from(selectedItemsToAssign).map((itemId) => Number(itemId)).filter((itemId) => Number.isInteger(itemId) && itemId > 0),
-      ),
-    );
-    const updatedBooking = await refreshActiveBookingManager(activeAssignmentBooking);
+    const targetItemIds = getTargetItemIds();
+    await runTimelineApi("Assigning guide...", async () => {
+      for (const itemId of targetItemIds) {
+        const serviceId = Number(itemId);
+        const arrDate = serviceDateByItemId.get(itemId);
+        if (!Number.isInteger(serviceId) || serviceId <= 0 || !arrDate) {
+          continue;
+        }
+
+        await mockApi.assignGuideToService({
+          resHolidayXid: serviceId,
+          supplierGuideXid: selectedGuideId,
+          arrDate,
+          maCa: "ALL",
+          assignedBy: 1,
+          operatorNote: "",
+        });
+      }
+    });
+
+    const updatedBooking = await refreshTimelineAndBookingManager(activeAssignmentBooking);
     setActiveAssignmentBooking(updatedBooking);
     setBookingManagerDirty(true);
     setShowGuideSelector(false);
@@ -1730,12 +1828,11 @@ export function Timeline() {
 
                   <div className="flex relative" style={timelineTrackStyle}>
                     {!isDaily ? (
-                      MONTHS.map((month, mIdx) => {
-                        const days = new Date(currentYear, mIdx + 1, 0).getDate();
-                        const pct = (days / totalDaysInYear) * 100;
+                      displayedMonthSegments.map((month) => {
+                        const pct = (month.days / totalDaysInRange) * 100;
                         return (
-                          <div key={month} style={{ width: `${pct}%` }} className="h-10 flex items-center justify-center border-r border-[#C4E8FF] bg-[#C4E8FF]/20">
-                            <span className="text-xs font-bold text-[#1D3663]">{month}</span>
+                          <div key={month.key} style={{ width: `${pct}%` }} className="h-10 flex items-center justify-center border-r border-[#C4E8FF] bg-[#C4E8FF]/20">
+                            <span className="text-xs font-bold text-[#1D3663]">{month.label}</span>
                           </div>
                         );
                       })
@@ -1751,17 +1848,16 @@ export function Timeline() {
                         </div>
 
                         <div className="flex h-5 border-b border-[#C4E8FF] relative z-10">
-                          {MONTHS.map((month, mIdx) => {
-                            const days = new Date(currentYear, mIdx + 1, 0).getDate();
+                          {displayedMonthSegments.map((month) => {
                             return (
-                              <div key={month} style={{ width: `${days * currentCellWidth}px` }} className="flex items-center justify-center bg-[#C4E8FF]/20 border-r border-[#C4E8FF] shrink-0">
-                                <span className="text-[10px] font-bold text-[#1D3663] uppercase tracking-widest">{month}</span>
+                              <div key={month.key} style={{ width: `${month.days * currentCellWidth}px` }} className="flex items-center justify-center bg-[#C4E8FF]/20 border-r border-[#C4E8FF] shrink-0">
+                                <span className="text-[10px] font-bold text-[#1D3663] uppercase tracking-widest">{month.label}</span>
                               </div>
                             );
                           })}
                         </div>
                         <div className="flex h-5 relative z-10">
-                          {allDaysInYear.map((date, i) => {
+                          {displayedDays.map((date, i) => {
                             const isWeekend = date.getDay() === 0 || date.getDay() === 6;
                             return (
                               <div key={i} style={{ width: `${currentCellWidth}px` }} className={`flex items-center justify-center border-r border-[#C4E8FF] shrink-0 ${isWeekend ? "bg-[#C4E8FF]/35" : "bg-white"}`}>
@@ -1872,7 +1968,7 @@ export function Timeline() {
                   const eventsInPeriodArr = events.filter((e: any) => {
                     const eStart = new Date(`${e.start}T00:00:00`).getTime();
                     const eEnd = eStart + e.duration * 86400000;
-                    return eStart < yearEndMs && eEnd > yearStartMs;
+                    return eStart < rangeEndExclusiveMs && eEnd > rangeStartMs;
                   });
 
                   const confirmedCount = eventsInPeriodArr.filter((e: any) => e.type === "tour" && !isCancelledEvent(e) && e.guideStatus === "confirmed").length;
@@ -1901,13 +1997,12 @@ export function Timeline() {
 
                       <div className="flex relative z-0" style={timelineTrackStyle}>
                         {!isDaily ? (
-                          MONTHS.map((month, mIdx) => {
-                            const days = new Date(currentYear, mIdx + 1, 0).getDate();
-                            const pct = (days / totalDaysInYear) * 100;
-                            return <div key={mIdx} style={{ width: `${pct}%` }} className="border-r border-[#C4E8FF]/60 pointer-events-none" />;
+                          displayedMonthSegments.map((month) => {
+                            const pct = (month.days / totalDaysInRange) * 100;
+                            return <div key={month.key} style={{ width: `${pct}%` }} className="border-r border-[#C4E8FF]/60 pointer-events-none" />;
                           })
                         ) : (
-                          allDaysInYear.map((date, i) => {
+                          displayedDays.map((date, i) => {
                             const isWeekend = date.getDay() === 0 || date.getDay() === 6;
                             return <div key={i} style={{ width: `${currentCellWidth}px` }} className={`shrink-0 border-r border-[#C4E8FF]/60 pointer-events-none ${isWeekend ? "bg-[#C4E8FF]/15" : ""}`} />;
                           })
@@ -1915,10 +2010,10 @@ export function Timeline() {
 
                         {eventsInPeriodArr.map((event: any, eIdx: number) => {
                           const eStartMs = new Date(`${event.start}T00:00:00`).getTime();
-                          const tStartMs = yearStartMs;
+                          const tStartMs = rangeStartMs;
                           const daysDiff = (eStartMs - tStartMs) / 86400000;
-                          const leftStyle = `calc(${(daysDiff / totalDaysInYear) * 100}% + 2px)`;
-                          const widthStyle = `calc(${(event.duration / totalDaysInYear) * 100}% - 4px)`;
+                          const leftStyle = `calc(${(daysDiff / totalDaysInRange) * 100}% + 2px)`;
+                          const widthStyle = `calc(${(event.duration / totalDaysInRange) * 100}% - 4px)`;
 
                           const seriesName = event.type === "tour" ? getBookingSeriesName(event.data) : null;
                           const isDimmed = hoveredSeries && seriesName && hoveredSeries !== seriesName;
@@ -2150,6 +2245,20 @@ export function Timeline() {
                         <span className="text-[10px] font-bold text-[#1D3663]/70">To</span>
                         <input type="date" value={newBusyTo} onChange={(e) => setNewBusyTo(e.target.value)} className="w-full text-xs bg-white border border-[#C4E8FF] rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none" />
                       </div>
+                      <div className="w-32 space-y-1">
+                        <span className="text-[10px] font-bold text-[#1D3663]/70">Shift</span>
+                        <select
+                          value={newBusyShiftCode}
+                          onChange={(e) => setNewBusyShiftCode(e.target.value as ShiftCode)}
+                          className="w-full text-xs bg-white border border-[#C4E8FF] rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none"
+                        >
+                          {SHIFT_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.value}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                       <button onClick={handleAddBusyDate} className="bg-[#1D3663] text-white px-6 py-2.5 rounded-xl text-xs font-bold shadow-md hover:brightness-95 transition-all h-[38px]">
                         Add Block
                       </button>
@@ -2227,8 +2336,7 @@ export function Timeline() {
             <div>
               <h4 className="text-base font-black text-[#1D3663]">Confirm guide status</h4>
               <p className="text-sm text-[#1D3663]/65 mt-2 font-medium">
-                Change <strong>{pendingGuideStatusChange.guideName}</strong> to{" "}
-                <strong>{pendingGuideStatusChange.isConfirmed ? "Waiting" : "Confirm"}</strong> for this booking?
+                Confirm <strong>{pendingGuideStatusChange.guideName}</strong> for all selected services in this booking?
               </p>
             </div>
             <div className="flex gap-3">
@@ -2424,6 +2532,8 @@ export function Timeline() {
           guideSearchTerm={guideSearchTerm}
           filteredGuidesForModal={filteredGuidesForModal}
           selectedGuideId={selectedGuideId}
+          availabilityLoading={availabilityLoading}
+          availabilityError={availabilityError}
           showUnassignDialog={showUnassignDialog}
           pendingUnassignGuide={pendingUnassignGuide}
           canUnassignSelectedItems={
@@ -2451,8 +2561,14 @@ export function Timeline() {
           onItemMouseDown={handleItemMouseDown}
           onItemMouseEnter={handleItemMouseEnter}
           onItemTimeSlotChange={handleItemTimeSlotChange}
-          onOpenGuideSelector={() => setShowGuideSelector(true)}
-          onCloseGuideSelector={() => setShowGuideSelector(false)}
+          onOpenGuideSelector={() => {
+            setSelectedGuideId(null);
+            setShowGuideSelector(true);
+          }}
+          onCloseGuideSelector={() => {
+            setShowGuideSelector(false);
+            setSelectedGuideId(null);
+          }}
           onGuideSearchTermChange={setGuideSearchTerm}
           onSelectGuide={handleSelectGuide}
           onConfirmAssignment={handleConfirmAssignment}

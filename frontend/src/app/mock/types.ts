@@ -37,6 +37,8 @@ export type CountryOption = {
 
 export type ServiceDayPart = "full-day" | "morning" | "afternoon" | "evening";
 
+export type ShiftCode = "M1" | "M2" | "A1" | "A2" | "E1" | "E2" | "N1" | "N2" | "ALL";
+
 export type GuideEmailStatus = "draft" | "sent";
 
 export type GuideEmailRecord = {
@@ -234,9 +236,16 @@ export type BookingManagerData = {
   guideStatuses: Record<string, number>;
 };
 
+export type AvailableGuide = {
+  guideId: number;
+  guideName: string;
+};
+
 export type AssignGuideToServiceRequest = {
   resHolidayXid: number;
   supplierGuideXid: number;
+  arrDate?: string;
+  maCa?: ShiftCode;
   operatorNote?: string;
   assignedBy: number;
 };
@@ -245,6 +254,9 @@ export type AssignGuideToServiceResponse = {
   pid: number;
   resHolidayXid: number;
   supplierGuideXid: number;
+  arrDate: string;
+  maCa: ShiftCode;
+  busyStatus: string;
   assignStatus: number;
   assignedBy: number;
   assignedDateUtc: string;

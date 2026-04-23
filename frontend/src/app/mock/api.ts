@@ -1,4 +1,5 @@
 import type {
+  AvailableGuide,
   AssignGuideToServiceRequest,
   AssignGuideToServiceResponse,
   BookingManagerData,
@@ -9,6 +10,7 @@ import type {
   GuideFormData,
   GuideProfileData,
   ServiceDayPart,
+  ShiftCode,
   TimelineBookingSeries,
   TimelineData,
   WhtType,
@@ -111,10 +113,18 @@ type ApiAssignGuideToServiceResponse = {
   pid: number;
   resHolidayXid: number;
   supplierGuideXid: number;
+  arrDate: string;
+  maCa: ShiftCode;
+  busyStatus: string;
   assignStatus: number;
   assignedBy: number;
   assignedDateUtc: string;
   operatorNote: string;
+};
+
+type ApiAvailableGuide = {
+  guideId: number;
+  guideName: string;
 };
 
 type ApiTimelineGuide = {
@@ -597,6 +607,9 @@ const mapAssignGuideToServiceResponse = (
   pid: assignment.pid,
   resHolidayXid: assignment.resHolidayXid,
   supplierGuideXid: assignment.supplierGuideXid,
+  arrDate: assignment.arrDate,
+  maCa: assignment.maCa,
+  busyStatus: assignment.busyStatus,
   assignStatus: assignment.assignStatus,
   assignedBy: assignment.assignedBy,
   assignedDateUtc: assignment.assignedDateUtc,
@@ -760,12 +773,47 @@ export const mockApi = {
       body: JSON.stringify({
         resHolidayXid: payload.resHolidayXid,
         supplierGuideXid: payload.supplierGuideXid,
+        arrDate: payload.arrDate ?? null,
+        maCa: payload.maCa ?? "ALL",
         operatorNote: payload.operatorNote ?? "",
         assignedBy: payload.assignedBy,
       }),
     });
 
     return mapAssignGuideToServiceResponse(assignment);
+  },
+
+  async searchAvailableGuides(arrDate: string, maCa: ShiftCode): Promise<AvailableGuide[]> {
+    const searchParams = new URLSearchParams({
+      arrDate,
+      maCa,
+    });
+
+    return request<ApiAvailableGuide[]>(`/api/service-guide-assignments/available-guides?${searchParams.toString()}`);
+  },
+
+  async confirmServiceGuide(resHolidayId: number): Promise<void> {
+    await request<void>("/api/service-guide-assignments/confirm", {
+      method: "POST",
+      body: JSON.stringify({ resHolidayId }),
+    });
+  },
+
+  async unassignGuideFromService(resHolidayId: number, guideId: number): Promise<void> {
+    await request<void>(`/api/service-guide-assignments/${resHolidayId}/guides/${guideId}`, {
+      method: "DELETE",
+    });
+  },
+
+  async markGuidePersonalBusy(guideId: number, dateNghi: string, caNghi: ShiftCode): Promise<void> {
+    await request<void>("/api/service-guide-assignments/busy-personal", {
+      method: "POST",
+      body: JSON.stringify({
+        guideId,
+        dateNghi,
+        caNghi,
+      }),
+    });
   },
 
   async setBookingGuideConfirmation(bookingId: string, guideName: string, confirmed: boolean): Promise<TimelineData> {

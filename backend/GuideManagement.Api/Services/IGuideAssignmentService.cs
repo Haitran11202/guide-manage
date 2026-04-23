@@ -4,7 +4,25 @@ namespace GuideManagement.Api.Services;
 
 public interface IGuideAssignmentService
 {
+    Task<IReadOnlyList<AvailableGuideDto>> SearchAvailableGuidesAsync(
+        DateTime arrDate,
+        string? maCa,
+        CancellationToken cancellationToken);
+
     Task<AssignGuideToServiceResponse> AssignGuideToServiceAsync(
         AssignGuideToServiceRequest request,
+        CancellationToken cancellationToken);
+
+    Task ConfirmServiceGuideAsync(
+        int resHolidayId,
+        CancellationToken cancellationToken);
+
+    Task UnassignGuideAsync(
+        int resHolidayId,
+        int guideId,
+        CancellationToken cancellationToken);
+
+    Task MarkGuidePersonalBusyAsync(
+        MarkGuidePersonalBusyRequest request,
         CancellationToken cancellationToken);
 }

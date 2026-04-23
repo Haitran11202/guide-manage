@@ -1,0 +1,7 @@
+namespace GuideManagement.Api.Models.ServiceGuideAssignments;
+
+public sealed class AvailableGuideDto
+{
+    public int GuideId { get; init; }
+    public string GuideName { get; init; } = string.Empty;
+}
