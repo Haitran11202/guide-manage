@@ -648,6 +648,9 @@ export function Timeline() {
   const [guideDetailsModalId, setGuideDetailsModalId] = useState<number | null>(null);
   const [detailsModalYear, setDetailsModalYear] = useState(new Date().getFullYear());
   const [guideOverviewFilter, setGuideOverviewFilter] = useState<'total' | 'finished' | 'incoming'>('total');
+  const [guideAnnualBookings, setGuideAnnualBookings] = useState<Booking[]>([]);
+  const [guideAnnualBookingsLoading, setGuideAnnualBookingsLoading] = useState(false);
+  const [guideAnnualBookingsError, setGuideAnnualBookingsError] = useState<string | null>(null);
 
   const [newBusyFrom, setNewBusyFrom] = useState("");
   const [newBusyTo, setNewBusyTo] = useState("");
@@ -670,8 +673,10 @@ export function Timeline() {
   const [showUnassignDialog, setShowUnassignDialog] = useState(false);
   const [pendingUnassignGuide, setPendingUnassignGuide] = useState<string | null>(null);
 
-  const getStatusBadge = (status: string) => {
-    switch (status.toLowerCase()) {
+  const getStatusBadge = (status?: string | null) => {
+    const normalizedStatus = (status ?? "").toLowerCase();
+
+    switch (normalizedStatus) {
       case "confirmed": case "paid": case "book": case "booked":
         return <span className="text-[#1D3663] font-bold uppercase text-[10px] tracking-widest">Confirmed</span>;
       case "requested": case "on request":
@@ -679,7 +684,11 @@ export function Timeline() {
       case "cancelled": case "canceled":
         return <span className="text-[#1D3663]/45 font-bold uppercase text-[10px] tracking-widest line-through">Cancelled</span>;
       default:
-        return <span className="text-[#1D3663]/70 font-bold uppercase text-[10px] tracking-widest">{status}</span>;
+        return (
+          <span className="text-[#1D3663]/70 font-bold uppercase text-[10px] tracking-widest">
+            {status?.trim() || "Unknown"}
+          </span>
+        );
     }
   };
 
@@ -1733,6 +1742,62 @@ export function Timeline() {
 
   const detailsGuide = guidesWithTours.find((g: any) => g.id === guideDetailsModalId);
 
+  useEffect(() => {
+    if (!guideDetailsModalId || !detailsGuide) {
+      setGuideAnnualBookings([]);
+      setGuideAnnualBookingsError(null);
+      setGuideAnnualBookingsLoading(false);
+      return;
+    }
+
+    let active = true;
+    setGuideAnnualBookingsLoading(true);
+    setGuideAnnualBookingsError(null);
+
+    const from = `${detailsModalYear}-01-01`;
+    const to = `${detailsModalYear}-12-31`;
+
+    void (async () => {
+      try {
+        const data = await runTimelineApi("Loading annual bookings...", () =>
+          mockApi.getTimelineData({
+            from,
+            to,
+            countryXid: selectedCountryXidNumber || undefined,
+            guide: detailsGuide.name,
+          }),
+        false,
+        );
+
+        if (!active) {
+          return;
+        }
+
+        const annualBookings = (data.bookingsData ?? []).filter((booking) =>
+          booking.assignedGuides.includes(detailsGuide.name),
+        );
+        setGuideAnnualBookings(annualBookings);
+      } catch (error) {
+        if (!active) {
+          return;
+        }
+
+        setGuideAnnualBookings([]);
+        setGuideAnnualBookingsError(
+          error instanceof Error ? error.message : "Unable to load annual bookings.",
+        );
+      } finally {
+        if (active) {
+          setGuideAnnualBookingsLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [detailsGuide, detailsModalYear, guideDetailsModalId, selectedCountryXidNumber]);
+
   return (
     <div className="flex flex-col h-screen bg-[#C4E8FF]/20 overflow-hidden font-sans text-[#1D3663] select-none w-full">
       {timelineLoadingCount > 0 && (
@@ -2160,29 +2225,85 @@ export function Timeline() {
 
       {/* --- DUAL PANE MODAL: Guide Details & Busy Dates (Full Screen) --- */}
       {guideDetailsModalId && detailsGuide && (() => {
-        // Calculate stats dynamically based on the selected detailsModalYear
-        const toursInYear = detailsGuide.tours.filter((t: any) => t.startDay.startsWith(detailsModalYear.toString()));
-        const todayMs = new Date().getTime();
-
-        let finishedCount = 0;
-        let incomingCount = 0;
-
-        toursInYear.forEach((t: any) => {
-          if (t.status?.toLowerCase() === 'cancelled') return;
-          const endMs = new Date(`${t.startDay}T00:00:00`).getTime() + (t.duration - 1) * 86400000;
-          if (endMs < todayMs) {
-            finishedCount++;
-          } else {
-            incomingCount++;
+        const extractResCode = (tour: any) => {
+          const groupName = String(tour.groupName ?? "").trim();
+          if (groupName) {
+            const slashIndex = groupName.indexOf("/");
+            return slashIndex > 0 ? groupName.slice(0, slashIndex).trim() : groupName;
           }
-        });
 
-        // Filtered view based on the current guideOverviewFilter state
-        const displayedToursInYear = toursInYear.filter((t: any) => {
-          if (t.status?.toLowerCase() === 'cancelled') return true;
-          const endMs = new Date(`${t.startDay}T00:00:00`).getTime() + (t.duration - 1) * 86400000;
-          if (guideOverviewFilter === 'finished') return endMs < todayMs;
-          if (guideOverviewFilter === 'incoming') return endMs >= todayMs;
+          const ref = String(tour.ref ?? "").trim();
+          const refMatch = ref.match(/(\d+)(?:\/\d+)?$/);
+          return refMatch?.[1] ?? (ref || String(tour.id));
+        };
+
+        const formatDateKey = (value: Date) => {
+          const year = value.getFullYear();
+          const month = String(value.getMonth() + 1).padStart(2, "0");
+          const day = String(value.getDate()).padStart(2, "0");
+          return `${year}-${month}-${day}`;
+        };
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayMs = today.getTime();
+
+        const resBookingsInYear = Array.from(
+          guideAnnualBookings.reduce((map: Map<string, any>, tour: any) => {
+            const resCode = extractResCode(tour);
+            const startMs = new Date(`${tour.startDay}T00:00:00`).getTime();
+            const endMs = startMs + (Math.max(1, tour.duration) - 1) * 86400000;
+
+            if (!map.has(resCode)) {
+              map.set(resCode, {
+                id: `res-${resCode}`,
+                resCode,
+                ref: resCode,
+                client: tour.client,
+                groupName: resCode,
+                startDay: tour.startDay,
+                deptDate: formatDateKey(new Date(endMs)),
+                status: tour.status,
+                sourceTours: [tour],
+                representativeTour: tour,
+                isConfirmed: isGuideConfirmed(tour, detailsGuide.name),
+              });
+              return map;
+            }
+
+            const current = map.get(resCode);
+            current.sourceTours.push(tour);
+
+            if (startMs < new Date(`${current.startDay}T00:00:00`).getTime()) {
+              current.startDay = tour.startDay;
+              current.client = tour.client;
+              current.representativeTour = tour;
+            }
+
+            if (endMs > new Date(`${current.deptDate}T00:00:00`).getTime()) {
+              current.deptDate = formatDateKey(new Date(endMs));
+            }
+
+            if (String(tour.status ?? "").toLowerCase() === "cancelled") {
+              current.status = tour.status;
+            }
+
+            current.isConfirmed = current.isConfirmed || isGuideConfirmed(tour, detailsGuide.name);
+            return map;
+          }, new Map<string, any>()),
+        ).sort((a, b) => new Date(a.startDay).getTime() - new Date(b.startDay).getTime());
+
+        const finishedCount = resBookingsInYear.filter(
+          (booking) => new Date(`${booking.deptDate}T00:00:00`).getTime() < todayMs,
+        ).length;
+        const incomingCount = resBookingsInYear.filter(
+          (booking) => new Date(`${booking.deptDate}T00:00:00`).getTime() >= todayMs,
+        ).length;
+
+        const displayedToursInYear = resBookingsInYear.filter((booking) => {
+          const deptDateMs = new Date(`${booking.deptDate}T00:00:00`).getTime();
+          if (guideOverviewFilter === 'finished') return deptDateMs < todayMs;
+          if (guideOverviewFilter === 'incoming') return deptDateMs >= todayMs;
           return true;
         });
 
@@ -2228,50 +2349,52 @@ export function Timeline() {
                   <div className="grid grid-cols-3 gap-4">
                     <div onClick={() => setGuideOverviewFilter('total')} className={`bg-white p-4 rounded-2xl border cursor-pointer hover:bg-gray-50 transition-all ${guideOverviewFilter === 'total' ? 'border-[#1D3663] ring-1 ring-[#1D3663]' : 'border-[#C4E8FF] shadow-sm'} flex flex-col items-center justify-center text-center`}>
                       <span className="text-[9px] font-black text-[#1D3663]/55 uppercase tracking-widest">Total Bookings</span>
-                      <span className="text-2xl font-black text-[#1D3663] mt-1">{toursInYear.length}</span>
+                      <span className="text-2xl font-black text-[#1D3663] mt-1">{guideAnnualBookingsLoading ? "..." : resBookingsInYear.length}</span>
                     </div>
                     <div onClick={() => setGuideOverviewFilter('finished')} className={`bg-white p-4 rounded-2xl border cursor-pointer hover:bg-emerald-50/50 transition-all ${guideOverviewFilter === 'finished' ? 'border-emerald-600 ring-1 ring-emerald-600' : 'border-[#C4E8FF] shadow-sm'} flex flex-col items-center justify-center text-center`}>
                       <span className="text-[9px] font-black text-emerald-600/70 uppercase tracking-widest flex items-center gap-1"><History className="w-3 h-3" /> Finished</span>
-                      <span className="text-2xl font-black text-emerald-600 mt-1">{finishedCount}</span>
+                      <span className="text-2xl font-black text-emerald-600 mt-1">{guideAnnualBookingsLoading ? "..." : finishedCount}</span>
                     </div>
                     <div onClick={() => setGuideOverviewFilter('incoming')} className={`bg-white p-4 rounded-2xl border cursor-pointer hover:bg-[#F3796A]/5 transition-all ${guideOverviewFilter === 'incoming' ? 'border-[#F3796A] ring-1 ring-[#F3796A]' : 'border-[#C4E8FF] shadow-sm'} flex flex-col items-center justify-center text-center`}>
                       <span className="text-[9px] font-black text-[#F3796A] uppercase tracking-widest flex items-center gap-1"><PlaneLanding className="w-3 h-3" /> Incoming</span>
-                      <span className="text-2xl font-black text-[#F3796A] mt-1">{incomingCount}</span>
+                      <span className="text-2xl font-black text-[#F3796A] mt-1">{guideAnnualBookingsLoading ? "..." : incomingCount}</span>
                     </div>
                   </div>
                 </div>
 
                 <div className="flex-1 overflow-auto p-4 px-6 space-y-2.5">
-                  {displayedToursInYear.length === 0 ? (
+                  {guideAnnualBookingsLoading ? (
+                    <div className="text-center py-10 text-[#1D3663]/45 font-bold italic text-sm">Loading annual bookings...</div>
+                  ) : guideAnnualBookingsError ? (
+                    <div className="text-center py-10 text-[#F3796A] font-bold italic text-sm">{guideAnnualBookingsError}</div>
+                  ) : displayedToursInYear.length === 0 ? (
                     <div className="text-center py-10 text-[#1D3663]/45 font-bold italic text-sm">No bookings found for the selected view.</div>
                   ) : (
-                    displayedToursInYear.sort((a: any, b: any) => new Date(a.startDay).getTime() - new Date(b.startDay).getTime()).map((t: any) => {
-                      const endObj = new Date(new Date(t.startDay).getTime() + (t.duration - 1) * 86400000);
-                      const endStr = endObj.toISOString().split('T')[0];
-                      const isCancelled = t.status?.toLowerCase() === 'cancelled';
+                    displayedToursInYear.map((booking: any) => {
+                      const isCancelled = booking.status?.toLowerCase() === 'cancelled';
 
                       return (
-                        <div key={t.id} className={`px-4 py-3 rounded-xl border ${isCancelled ? 'border-[#C4E8FF]/50 bg-gray-50 opacity-60' : 'border-[#C4E8FF] bg-white shadow-sm'} transition-all flex items-center justify-between gap-3`}>
+                        <div key={booking.id} className={`px-4 py-3 rounded-xl border ${isCancelled ? 'border-[#C4E8FF]/50 bg-gray-50 opacity-60' : 'border-[#C4E8FF] bg-white shadow-sm'} transition-all flex items-center justify-between gap-3`}>
                           <div className="flex flex-col min-w-0">
-                            <div className={`text-xs font-black truncate leading-tight ${isCancelled ? 'text-[#1D3663]/60 line-through' : 'text-[#1D3663]'}`} title={t.ref}>{t.ref}</div>
-                            <div className="text-[10px] font-bold text-[#1D3663]/65 mt-0.5 truncate">{t.groupName} • {t.startDay} → {endStr}</div>
+                            <div className={`text-xs font-black truncate leading-tight ${isCancelled ? 'text-[#1D3663]/60 line-through' : 'text-[#1D3663]'}`} title={booking.ref}>{booking.ref}</div>
+                            <div className="text-[10px] font-bold text-[#1D3663]/65 mt-0.5 truncate">{booking.client} • {booking.startDay} → {booking.deptDate}</div>
                           </div>
                           <div className="flex flex-col items-end gap-1.5 shrink-0 min-w-[75px]">
                             <div className="flex justify-end w-full">
-                              {getStatusBadge(t.status)}
+                              {getStatusBadge(booking.status)}
                             </div>
                             {!isCancelled && (
                               <div
-                                className={`text-[9px] font-black uppercase tracking-widest ${isGuideConfirmed(t, detailsGuide.name) ? "text-[#1D3663]" : "text-[#F3796A]"
+                                className={`text-[9px] font-black uppercase tracking-widest ${booking.isConfirmed ? "text-[#1D3663]" : "text-[#F3796A]"
                                   }`}
                               >
-                                {isGuideConfirmed(t, detailsGuide.name) ? "Confirm" : "Waiting"}
+                                {booking.isConfirmed ? "Confirm" : "Waiting"}
                               </div>
                             )}
                             <button
                               onClick={() => {
                                 setGuideDetailsModalId(null);
-                                handleOpenBookingManager(t);
+                                handleOpenBookingManager(booking.representativeTour);
                               }}
                               className="bg-[#1D3663] text-white w-full py-1.5 rounded-md text-[10px] font-black uppercase tracking-widest hover:brightness-95 transition-all shadow-sm flex items-center justify-center leading-none mt-1"
                             >
