@@ -284,6 +284,9 @@ export function Timeline() {
   const debouncedModalFilterClient = useDebouncedValue(modalFilterClient, 300);
   const debouncedModalFilterCountry = useDebouncedValue(modalFilterCountry, 300);
   const debouncedModalFilterGuide = useDebouncedValue(modalFilterGuide, 300);
+  const debouncedFilterSearch = useDebouncedValue(filterSearch, 300);
+  const debouncedFilterClient = useDebouncedValue(filterClient, 300);
+  const debouncedFilterGuide = useDebouncedValue(filterGuide, 300);
 
   const [hoveredSeries, setHoveredSeries] = useState<string | null>(null);
 
@@ -464,9 +467,14 @@ export function Timeline() {
   const fetchTimelineData = async (range?: { from?: string; to?: string }) => {
     const query =
       activeTab === "calendar"
-        ? selectedCountryXidNumber
-          ? { ...range, countryXid: selectedCountryXidNumber }
-          : range
+        ? {
+            ...range,
+            countryXid: selectedCountryXidNumber || undefined,
+            search: debouncedFilterSearch || undefined,
+            client: debouncedFilterClient || undefined,
+            guide: debouncedFilterGuide || undefined,
+            series: filterSeries,
+          }
         : {
             ...range,
             search: debouncedModalSearchTerm || undefined,
@@ -824,6 +832,10 @@ export function Timeline() {
     currentYear,
     filterDateFrom,
     filterDateTo,
+    debouncedFilterSearch,
+    debouncedFilterClient,
+    debouncedFilterGuide,
+    filterSeries,
     isDaily,
     debouncedModalFilterClient,
     debouncedModalFilterCountry,
@@ -1802,7 +1814,12 @@ export function Timeline() {
                   <input
                     type="date"
                     value={draftFilterDateFrom}
-                    onChange={(e) => setDraftFilterDateFrom(e.target.value)}
+                    onChange={(e) => {
+                      const nextValue = e.target.value;
+                      setDraftFilterDateFrom(nextValue);
+                      setFilterDateFrom(nextValue);
+                      setGuidePage(1);
+                    }}
                     onBlur={commitCalendarDateFrom}
                     onKeyDown={(event) => handleCalendarDateKeyDown(event, commitCalendarDateFrom)}
                     className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-2 py-1 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none h-[30px]"
@@ -1813,7 +1830,12 @@ export function Timeline() {
                   <input
                     type="date"
                     value={draftFilterDateTo}
-                    onChange={(e) => setDraftFilterDateTo(e.target.value)}
+                    onChange={(e) => {
+                      const nextValue = e.target.value;
+                      setDraftFilterDateTo(nextValue);
+                      setFilterDateTo(nextValue);
+                      setGuidePage(1);
+                    }}
                     onBlur={commitCalendarDateTo}
                     onKeyDown={(event) => handleCalendarDateKeyDown(event, commitCalendarDateTo)}
                     className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-2 py-1 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none h-[30px]"

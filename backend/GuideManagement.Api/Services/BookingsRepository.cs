@@ -361,12 +361,18 @@ public sealed class BookingsRepository(
             res.PartyName AS GroupName,
             res.ArrDate AS StartDay, 
             CASE WHEN ISNULL(res.NoOfNights, 1) < 1 THEN 1 ELSE res.NoOfNights END AS Duration, 
-            M_Status.Status, 
+            CASE res.Status
+                WHEN 'O' THEN 'Option'
+                WHEN 'C' THEN 'Confirmed'
+                WHEN 'X' THEN 'Cancelled'
+                WHEN 'B' THEN 'Booked'
+                WHEN 'D' THEN 'Paid'
+                ELSE 'Requested' 
+            END AS Status, 
             CountryData.Countries AS Country, 
             COALESCE(NULLIF(mh.Code, ''), 'NO SERIES') AS Series
         FROM dbo.Res res
         INNER JOIN dbo.M_Client c ON c.Pid = res.ClientXid
-        left join M_Status on M_Status.Code = Res.Status
         -- 1. Ghép chuỗi Quốc gia từ Res_Holidays
         OUTER APPLY (
             SELECT STUFF((

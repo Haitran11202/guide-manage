@@ -9,6 +9,7 @@ public sealed class TimelineRepository(
     IBookingManagementState bookingManagementState) : ITimelineRepository
 {
     private const int BookingSeriesPageSize = 10;
+    private const int DefaultGuideCountryXid = 541;
     private const string AllDayShiftCode = "ALL";
     private static readonly string[] ConcreteShiftCodes =
     {
@@ -149,6 +150,12 @@ public sealed class TimelineRepository(
             .Select(booking =>
             {
                 var assignedGuideIds = GetAssignedGuideIdsForBooking(itemAssignments, booking.Id).ToHashSet();
+                if (assignedGuideIds.Count == 0 &&
+                    assignedGuideIdsByBooking.TryGetValue(booking.Id, out var assignedGuideIdsFromRelations))
+                {
+                    assignedGuideIds = assignedGuideIdsFromRelations.ToHashSet();
+                }
+
                 var confirmedGuideIds = confirmedGuideIdsByBooking.TryGetValue(booking.Id, out var confirmed)
                     ? confirmed.Where(assignedGuideIds.Contains).ToHashSet()
                     : [];
@@ -221,7 +228,11 @@ public sealed class TimelineRepository(
             .ToArray();
 
         IReadOnlyList<TimelineBookingDto> bookingsData;
-        if (!string.IsNullOrWhiteSpace(loadSeries))
+        if (restrictToBookingsWithAssignedGuides && string.IsNullOrWhiteSpace(loadSeries))
+        {
+            bookingsData = filteredBookings;
+        }
+        else if (!string.IsNullOrWhiteSpace(loadSeries))
         {
             var normalizedSeries = loadSeries.Trim();
             var skip = Math.Max(0, seriesSkip ?? 0);
@@ -1037,6 +1048,8 @@ public sealed class TimelineRepository(
                 CAST(ISNULL(g.Guide, '') AS nvarchar(255)) AS Name,
                 LTRIM(RTRIM(ISNULL(g.Appearance, ''))) AS Appearance
             FROM dbo.M_SupplierGuide g
+            WHERE @CountryXid IS NULL
+               OR ISNULL(g.CountryXid, @DefaultGuideCountryXid) = @CountryXid
             ORDER BY g.Guide;
             """;
 
@@ -1047,6 +1060,11 @@ public sealed class TimelineRepository(
         var rows = await connection.QueryAsync<GuideRow>(
             new CommandDefinition(
                 sql,
+                new
+                {
+                    CountryXid = countryXid,
+                    DefaultGuideCountryXid
+                },
                 cancellationToken: cancellationToken));
 
         return rows.Select(row => new TimelineGuideDto
@@ -1096,7 +1114,7 @@ public sealed class TimelineRepository(
                AND latestGuide.RowNum = 1
             INNER JOIN dbo.M_SupplierGuide g ON g.Pid = COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid)
             WHERE COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) IS NOT NULL
-              AND (@CountryXid IS NULL OR g.CountryXid = @CountryXid)
+              AND (@CountryXid IS NULL OR ISNULL(g.CountryXid, @DefaultGuideCountryXid) = @CountryXid)
               AND rh.ArrDate IS NOT NULL
               AND rh.ArrDate <= @RangeEnd
               AND DATEADD(day, CASE WHEN ISNULL(rh.NoOfNights, 1) < 1 THEN 1 ELSE rh.NoOfNights END, rh.ArrDate) >= @RangeStart;
@@ -1111,7 +1129,8 @@ public sealed class TimelineRepository(
                 {
                     RangeStart = rangeStart.ToDateTime(TimeOnly.MinValue),
                     RangeEnd = rangeEnd.ToDateTime(TimeOnly.MinValue),
-                    CountryXid = countryXid
+                    CountryXid = countryXid,
+                    DefaultGuideCountryXid
                 },
                 cancellationToken: cancellationToken));
 
