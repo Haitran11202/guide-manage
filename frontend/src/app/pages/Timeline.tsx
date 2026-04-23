@@ -2471,7 +2471,7 @@ export function Timeline() {
                               RES {displayResRef || booking.resCode || "N/A"}
                             </div>
                             <div className="text-[10px] font-bold text-[#1D3663]/65 mt-0.5 break-words leading-relaxed" title={displayClient}>
-                              {displayClient || "No party name"} - {displayStartDay || "N/A"} â†’ {displayDeptDate || "N/A"}
+                              {displayClient || "No party name"} - {displayStartDay || "N/A"} - {displayDeptDate || "N/A"}
                             </div>
                             <div className="text-[9px] font-bold text-[#1D3663]/50 mt-1 break-words leading-relaxed" title={serviceSummary}>
                               {booking.sourceTours?.length ?? 0} services - {serviceSummary}
@@ -2559,7 +2559,7 @@ export function Timeline() {
                           <div className="flex items-center gap-3">
                             <div className="w-2 h-2 rounded-full bg-violet-500"></div>
                             <span className="text-xs font-black text-red-700">
-                              {b.from} <span className="text-red-400 mx-1">â†’</span> {b.to}
+                              {b.from} <span className="text-red-400 mx-1">-</span> {b.to}
                             </span>
                           </div>
                           <button onClick={() => handleRemoveBusyDate(b.id, detailsGuide.id)} className="text-red-500 hover:bg-red-200 p-2 rounded-xl transition-colors" title="Remove block">
