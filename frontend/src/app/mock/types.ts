@@ -57,6 +57,11 @@ export type GuideTimeException = {
   endHour: number;
 };
 
+export type GuideBookingShift = {
+  date: string;
+  shift: ShiftCode;
+};
+
 export type GuideRecord = {
   id: number;
   name: string;

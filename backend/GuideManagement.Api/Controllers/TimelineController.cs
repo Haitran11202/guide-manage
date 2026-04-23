@@ -113,6 +113,25 @@ public sealed class TimelineController(ITimelineRepository timelineRepository) :
         return Ok(timeline);
     }
 
+    [HttpGet("guide-booking-shifts/{bookingId}/{guideId:int}")]
+    public async Task<ActionResult<IReadOnlyList<GuideBookingShiftDto>>> GetGuideBookingShifts(
+        string bookingId,
+        int guideId,
+        CancellationToken cancellationToken)
+    {
+        var shifts = await timelineRepository.GetGuideBookingShiftsAsync(bookingId, guideId, cancellationToken);
+        return Ok(shifts);
+    }
+
+    [HttpPost("guide-booking-shifts")]
+    public async Task<ActionResult<TimelineDataDto>> SetGuideBookingShifts(
+        [FromBody] GuideBookingShiftsUpsertRequest request,
+        CancellationToken cancellationToken)
+    {
+        var timeline = await timelineRepository.SetGuideBookingShiftsAsync(request, cancellationToken);
+        return Ok(timeline);
+    }
+
     [HttpPost("guide-time-exceptions")]
     public async Task<ActionResult<TimelineDataDto>> SetGuideBookingTimeExceptions(
         [FromBody] GuideTimeExceptionsUpsertRequest request,

@@ -1,5 +1,6 @@
 using Dapper;
 using GuideManagement.Api.Models.Timeline;
+using Microsoft.Data.SqlClient;
 
 namespace GuideManagement.Api.Services;
 
@@ -8,6 +9,19 @@ public sealed class TimelineRepository(
     IBookingManagementState bookingManagementState) : ITimelineRepository
 {
     private const int BookingSeriesPageSize = 10;
+    private const string AllDayShiftCode = "ALL";
+    private static readonly HashSet<string> SupportedShiftCodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        AllDayShiftCode,
+        "M1",
+        "M2",
+        "A1",
+        "A2",
+        "E1",
+        "E2",
+        "N1",
+        "N2"
+    };
 
     public async Task<TimelineDataDto> GetTimelineAsync(
         DateOnly? from,
@@ -509,6 +523,115 @@ public sealed class TimelineRepository(
         return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<GuideBookingShiftDto>> GetGuideBookingShiftsAsync(
+        string bookingId,
+        int guideId,
+        CancellationToken cancellationToken)
+    {
+        if (guideId <= 0 || !int.TryParse(bookingId, out var bookingPid))
+        {
+            return [];
+        }
+
+        await using var connection = connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        var shiftColumnSql = await GetGuideBusyShiftColumnSqlAsync(connection, null, cancellationToken);
+
+        var sql = shiftColumnSql is null
+            ? BuildGetGuideBookingShiftsSqlWithoutShift()
+            : BuildGetGuideBookingShiftsSqlWithShift(shiftColumnSql);
+
+        var rows = await connection.QueryAsync<GuideBookingShiftRow>(
+            new CommandDefinition(
+                sql,
+                new
+                {
+                    BookingPid = bookingPid,
+                    GuideId = guideId,
+                    AllDayShiftCode
+                },
+                cancellationToken: cancellationToken));
+
+        return rows
+            .Where(row => row.Date.HasValue)
+            .Select(row => new GuideBookingShiftDto
+            {
+                Date = DateOnly.FromDateTime(row.Date!.Value),
+                Shift = NormalizeShiftCode(row.Shift)
+            })
+            .OrderBy(row => row.Date)
+            .ToArray();
+    }
+
+    public async Task<TimelineDataDto> SetGuideBookingShiftsAsync(
+        GuideBookingShiftsUpsertRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.GuideId <= 0 || !int.TryParse(request.BookingId, out var bookingPid))
+        {
+            return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
+        }
+
+        var entries = request.Entries
+            .Where(entry => entry.Date.HasValue)
+            .Select(entry => new
+            {
+                Date = entry.Date!.Value,
+                Shift = NormalizeShiftCode(entry.Shift)
+            })
+            .ToArray();
+
+        if (entries.Any(entry => !SupportedShiftCodes.Contains(entry.Shift)))
+        {
+            throw new InvalidOperationException("Unsupported shift code was provided.");
+        }
+
+        await using var connection = connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        var shiftColumnSql = await GetGuideBusyShiftColumnSqlAsync(connection, null, cancellationToken);
+        if (shiftColumnSql is null)
+        {
+            throw new InvalidOperationException("M_GuideBusy is missing the Shift column. Apply the latest SQL script before saving guide shifts.");
+        }
+
+        var sql = BuildUpdateGuideBookingShiftSql(shiftColumnSql);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            foreach (var entry in entries)
+            {
+                var affectedRows = await connection.ExecuteScalarAsync<int>(
+                    new CommandDefinition(
+                        sql,
+                        new
+                        {
+                            BookingPid = bookingPid,
+                            GuideId = request.GuideId,
+                            TargetDate = entry.Date.ToDateTime(TimeOnly.MinValue),
+                            Shift = entry.Shift
+                        },
+                        transaction,
+                        cancellationToken: cancellationToken));
+
+                if (affectedRows == 0)
+                {
+                    throw new InvalidOperationException(
+                        $"No matching guide busy record was found for guide {request.GuideId} on {entry.Date:yyyy-MM-dd}.");
+                }
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+
+        return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
+    }
+
     public async Task<TimelineDataDto> SetGuideBookingTimeExceptionsAsync(
         GuideTimeExceptionsUpsertRequest request,
         CancellationToken cancellationToken)
@@ -535,6 +658,175 @@ public sealed class TimelineRepository(
         }
 
         return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
+    }
+
+    private static async Task<string?> GetGuideBusyShiftColumnSqlAsync(
+        SqlConnection connection,
+        SqlTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT CASE
+                       WHEN COL_LENGTH('dbo.M_GuideBusy', 'Shift') IS NOT NULL THEN 'Shift'
+                       WHEN COL_LENGTH('dbo.M_GuideBusy', 'Ca') IS NOT NULL THEN 'Ca'
+                       ELSE NULL
+                   END;
+            """;
+
+        await using var command = new SqlCommand(sql, connection, transaction);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        if (result is null or DBNull)
+        {
+            return null;
+        }
+
+        return Convert.ToString(result) switch
+        {
+            "Shift" => "[Shift]",
+            "Ca" => "[Ca]",
+            _ => null
+        };
+    }
+
+    private static string BuildGetGuideBookingShiftsSqlWithShift(string shiftColumnSql) => $"""
+        DECLARE @ResXid int;
+
+        SELECT TOP (1) @ResXid = rh.ResXid
+        FROM dbo.Res_Holidays rh
+        WHERE rh.Pid = @BookingPid;
+
+        IF @ResXid IS NULL
+        BEGIN
+            RETURN;
+        END;
+
+        WITH CurrentAssignments AS
+        (
+            SELECT
+                rh.Pid AS ResHolidayXid,
+                CAST(rh.ArrDate AS date) AS ServiceDate,
+                COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS CurrentGuideId
+            FROM dbo.Res_Holidays rh
+            OUTER APPLY
+            (
+                SELECT TOP (1)
+                    hg.SupplierGuideXid
+                FROM dbo.Res_HolidayGuide hg
+                WHERE hg.ResHolidayXid = rh.Pid
+                  AND hg.SupplierGuideXid IS NOT NULL
+                ORDER BY hg.Pid DESC
+            ) latestGuide
+            WHERE rh.ResXid = @ResXid
+              AND rh.StatusXid != 9
+              AND rh.ArrDate IS NOT NULL
+        )
+        SELECT
+            currentAssignment.ServiceDate AS [Date],
+            CASE
+                WHEN COUNT(DISTINCT COALESCE(CAST(gb.{shiftColumnSql} AS varchar(10)), @AllDayShiftCode)) = 1
+                    THEN MAX(COALESCE(CAST(gb.{shiftColumnSql} AS varchar(10)), @AllDayShiftCode))
+                ELSE @AllDayShiftCode
+            END AS [Shift]
+        FROM CurrentAssignments currentAssignment
+        LEFT JOIN dbo.M_GuideBusy gb
+            ON gb.ResHolidayXid = currentAssignment.ResHolidayXid
+           AND gb.SupplierGuideXid = @GuideId
+        WHERE currentAssignment.CurrentGuideId = @GuideId
+        GROUP BY currentAssignment.ServiceDate
+        ORDER BY currentAssignment.ServiceDate;
+        """;
+
+    private static string BuildGetGuideBookingShiftsSqlWithoutShift() => """
+        DECLARE @ResXid int;
+
+        SELECT TOP (1) @ResXid = rh.ResXid
+        FROM dbo.Res_Holidays rh
+        WHERE rh.Pid = @BookingPid;
+
+        IF @ResXid IS NULL
+        BEGIN
+            RETURN;
+        END;
+
+        WITH CurrentAssignments AS
+        (
+            SELECT
+                CAST(rh.ArrDate AS date) AS ServiceDate,
+                COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS CurrentGuideId
+            FROM dbo.Res_Holidays rh
+            OUTER APPLY
+            (
+                SELECT TOP (1)
+                    hg.SupplierGuideXid
+                FROM dbo.Res_HolidayGuide hg
+                WHERE hg.ResHolidayXid = rh.Pid
+                  AND hg.SupplierGuideXid IS NOT NULL
+                ORDER BY hg.Pid DESC
+            ) latestGuide
+            WHERE rh.ResXid = @ResXid
+              AND rh.StatusXid != 9
+              AND rh.ArrDate IS NOT NULL
+        )
+        SELECT
+            currentAssignment.ServiceDate AS [Date],
+            @AllDayShiftCode AS [Shift]
+        FROM CurrentAssignments currentAssignment
+        WHERE currentAssignment.CurrentGuideId = @GuideId
+        GROUP BY currentAssignment.ServiceDate
+        ORDER BY currentAssignment.ServiceDate;
+        """;
+
+    private static string BuildUpdateGuideBookingShiftSql(string shiftColumnSql) => $"""
+        DECLARE @ResXid int;
+
+        SELECT TOP (1) @ResXid = rh.ResXid
+        FROM dbo.Res_Holidays rh
+        WHERE rh.Pid = @BookingPid;
+
+        IF @ResXid IS NULL
+        BEGIN
+            SELECT CAST(0 AS int);
+            RETURN;
+        END;
+
+        WITH CurrentAssignments AS
+        (
+            SELECT
+                rh.Pid AS ResHolidayXid,
+                COALESCE(latestGuide.SupplierGuideXid, rh.GuideXid) AS CurrentGuideId
+            FROM dbo.Res_Holidays rh
+            OUTER APPLY
+            (
+                SELECT TOP (1)
+                    hg.SupplierGuideXid
+                FROM dbo.Res_HolidayGuide hg
+                WHERE hg.ResHolidayXid = rh.Pid
+                  AND hg.SupplierGuideXid IS NOT NULL
+                ORDER BY hg.Pid DESC
+            ) latestGuide
+            WHERE rh.ResXid = @ResXid
+              AND rh.StatusXid != 9
+              AND rh.ArrDate IS NOT NULL
+              AND CAST(rh.ArrDate AS date) = CAST(@TargetDate AS date)
+        )
+        UPDATE gb
+        SET gb.{shiftColumnSql} = @Shift
+        FROM dbo.M_GuideBusy gb
+        INNER JOIN CurrentAssignments currentAssignment
+            ON currentAssignment.ResHolidayXid = gb.ResHolidayXid
+        WHERE currentAssignment.CurrentGuideId = @GuideId
+          AND gb.SupplierGuideXid = @GuideId
+          AND gb.ResHolidayXid IS NOT NULL
+          AND CAST(gb.[Date] AS date) = CAST(@TargetDate AS date)
+          AND UPPER(LTRIM(RTRIM(ISNULL(gb.Busy, '')))) IN ('P', 'D');
+
+        SELECT CAST(@@ROWCOUNT AS int);
+        """;
+
+    private static string NormalizeShiftCode(string? shift)
+    {
+        var normalized = (shift ?? string.Empty).Trim().ToUpperInvariant();
+        return SupportedShiftCodes.Contains(normalized) ? normalized : AllDayShiftCode;
     }
 
     private async Task<IReadOnlyList<TimelineBookingDto>> GetBookingsAsync(
@@ -1064,6 +1356,8 @@ public sealed class TimelineRepository(
     }
 
     private sealed record BusyDateRow(int Pid, int GuideId, DateTime Date, string? Busy);
+
+    private sealed record GuideBookingShiftRow(DateTime? Date, string? Shift);
 
     private sealed record GuideRelation(
         string BookingId,

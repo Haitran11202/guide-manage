@@ -68,12 +68,10 @@ type Guide = {
 
 type GuideTimeRangeDraft = {
   date: string;
-  startHour: string;
-  endHour: string;
+  shift: ShiftCode;
 };
 
 type GuideTimingModalState = {
-  mode: "edit-assigned" | "select-assignment";
   guideId: number;
   guideName: string;
   bookingId: string;
@@ -1533,30 +1531,24 @@ export function Timeline() {
     setShowGuideSelector(false);
   };
 
-  const openGuideTimingEditor = (guideId: number, guideName: string) => {
+  const openGuideTimingEditor = async (guideId: number, guideName: string) => {
     if (!activeAssignmentBooking) return;
-    const guide = guidesWithTours.find((item: any) => item.id === guideId);
-    if (!guide) return;
-
     const dates = getGuideAssignedDatesForBooking(guideId);
-    const existingByDate = new Map(
-      (guide.timeExceptions ?? [])
-        .filter((exception) => exception.bookingId === activeAssignmentBooking.id)
-        .map((exception) => [exception.date, exception]),
+    const savedShifts = await runTimelineApi("Loading guide shifts...", () =>
+      mockApi.getGuideBookingShifts(activeAssignmentBooking.id, guideId),
     );
+    const existingByDate = new Map(savedShifts.map((entry) => [entry.date, entry.shift]));
 
     setGuideTimingModalState({
-      mode: "edit-assigned",
       guideId,
       guideName,
       bookingId: activeAssignmentBooking.id,
-      title: `Timing for ${guideName}`,
-      submitLabel: "Save Timing",
-      description: "Define hour blocks for assigned dates. Leave a date blank to keep it as a full-day booking.",
+      title: `Shift for ${guideName}`,
+      submitLabel: "Save Shift",
+      description: "Choose the working shift for each assigned day. Saving updates the matching M_GuideBusy records for this guide.",
       drafts: dates.map((date) => ({
         date,
-        startHour: existingByDate.get(date)?.startHour?.toString() ?? "",
-        endHour: existingByDate.get(date)?.endHour?.toString() ?? "",
+        shift: existingByDate.get(date) ?? "ALL",
       })),
     });
   };
@@ -1566,75 +1558,30 @@ export function Timeline() {
     setSelectedGuideId(guideId);
   };
 
-  const handleGuideTimingDraftChange = (date: string, field: "startHour" | "endHour", value: string) => {
+  const handleGuideTimingDraftChange = (date: string, shift: ShiftCode) => {
     setGuideTimingModalState((current) => {
       if (!current) return current;
       return {
         ...current,
-        drafts: current.drafts.map((draft) => (draft.date === date ? { ...draft, [field]: value } : draft)),
+        drafts: current.drafts.map((draft) => (draft.date === date ? { ...draft, shift } : draft)),
       };
     });
   };
 
   const handleCloseGuideTimingModal = () => {
-    if (guideTimingModalState?.mode === "select-assignment") {
-      setSelectedGuideId(null);
-    }
     setGuideTimingModalState(null);
   };
 
   const handleSaveGuideTiming = async () => {
     if (!guideTimingModalState || !activeAssignmentBooking) return;
-
-    const guide = guidesWithTours.find((item: any) => item.id === guideTimingModalState.guideId);
-    if (!guide) return;
-
-    const entries: Array<{ date: string; startHour: number; endHour: number }> = [];
-    for (const draft of guideTimingModalState.drafts) {
-      const hasStart = draft.startHour.trim() !== "";
-      const hasEnd = draft.endHour.trim() !== "";
-
-      if (!hasStart && !hasEnd) continue;
-      if (!hasStart || !hasEnd) {
-        alert(`Please complete both start and end time for ${draft.date}.`);
-        return;
-      }
-
-      const startHour = Number(draft.startHour);
-      const endHour = Number(draft.endHour);
-      if (
-        Number.isNaN(startHour) ||
-        Number.isNaN(endHour) ||
-        startHour < 0 ||
-        endHour > 24 ||
-        startHour >= endHour
-      ) {
-        alert(`Invalid time range for ${draft.date}. Use 0-24 hours and keep start earlier than end.`);
-        return;
-      }
-
-      const sameDayRanges = (guide.timeExceptions ?? []).filter(
-        (exception) =>
-          exception.date === draft.date &&
-          exception.guideId === guideTimingModalState.guideId &&
-          !(exception.bookingId === guideTimingModalState.bookingId && exception.guideId === guideTimingModalState.guideId),
-      );
-      const hasOverlap = sameDayRanges.some(
-        (exception) => startHour < exception.endHour && endHour > exception.startHour,
-      );
-      if (hasOverlap) {
-        alert(`The selected range for ${draft.date} overlaps an existing assignment.`);
-        return;
-      }
-
-      entries.push({ date: draft.date, startHour, endHour });
-    }
-
-    await runTimelineApi("Saving timing exceptions...", () =>
-      mockApi.setGuideBookingTimeExceptions(
+    await runTimelineApi("Saving guide shifts...", () =>
+      mockApi.setGuideBookingShifts(
         guideTimingModalState.bookingId,
         guideTimingModalState.guideId,
-        entries,
+        guideTimingModalState.drafts.map((draft) => ({
+          date: draft.date,
+          shift: draft.shift,
+        })),
       ),
     );
 
@@ -2384,28 +2331,20 @@ export function Timeline() {
                     <Clock3 className="w-4 h-4 text-[#F3796A]" />
                     {draft.date}
                   </div>
-                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="mt-4">
                     <label className="space-y-2">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-[#1D3663]/55">Start hour</span>
-                      <input
-                        type="number"
-                        min="0"
-                        max="23"
-                        value={draft.startHour}
-                        onChange={(event) => handleGuideTimingDraftChange(draft.date, "startHour", event.target.value)}
+                      <span className="text-[10px] font-black uppercase tracking-widest text-[#1D3663]/55">Shift</span>
+                      <select
+                        value={draft.shift}
+                        onChange={(event) => handleGuideTimingDraftChange(draft.date, event.target.value as ShiftCode)}
                         className="w-full rounded-xl border border-[#C4E8FF] px-3 py-2 text-sm font-bold text-[#1D3663] outline-none focus:ring-2 focus:ring-[#F3796A]"
-                      />
-                    </label>
-                    <label className="space-y-2">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-[#1D3663]/55">End hour</span>
-                      <input
-                        type="number"
-                        min="1"
-                        max="24"
-                        value={draft.endHour}
-                        onChange={(event) => handleGuideTimingDraftChange(draft.date, "endHour", event.target.value)}
-                        className="w-full rounded-xl border border-[#C4E8FF] px-3 py-2 text-sm font-bold text-[#1D3663] outline-none focus:ring-2 focus:ring-[#F3796A]"
-                      />
+                      >
+                        {SHIFT_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.value} • {option.label}
+                          </option>
+                        ))}
+                      </select>
                     </label>
                   </div>
                 </div>

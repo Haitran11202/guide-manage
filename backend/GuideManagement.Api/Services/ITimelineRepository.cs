@@ -25,5 +25,7 @@ public interface ITimelineRepository
     Task<TimelineDataDto> UnassignBookingItemsAsync(UnassignBookingItemsRequest request, CancellationToken cancellationToken);
     Task<TimelineDataDto> UnassignGuideFromBookingAsync(string bookingId, string guideName, CancellationToken cancellationToken);
     Task<TimelineDataDto> SetGuideEmailRecordAsync(GuideEmailRecordUpsertRequest request, CancellationToken cancellationToken);
+    Task<IReadOnlyList<GuideBookingShiftDto>> GetGuideBookingShiftsAsync(string bookingId, int guideId, CancellationToken cancellationToken);
+    Task<TimelineDataDto> SetGuideBookingShiftsAsync(GuideBookingShiftsUpsertRequest request, CancellationToken cancellationToken);
     Task<TimelineDataDto> SetGuideBookingTimeExceptionsAsync(GuideTimeExceptionsUpsertRequest request, CancellationToken cancellationToken);
 }

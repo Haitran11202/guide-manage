@@ -5,6 +5,7 @@ import type {
   BookingManagerData,
   CityOption,
   CountryOption,
+  GuideBookingShift,
   GuideDirectoryItem,
   GuideEmailRecord,
   GuideFormData,
@@ -101,6 +102,11 @@ type ApiGuideTimeException = {
   date?: string | null;
   startHour: number;
   endHour: number;
+};
+
+type ApiGuideBookingShift = {
+  date?: string | null;
+  shift?: string | null;
 };
 
 type ApiBusyDate = {
@@ -341,6 +347,22 @@ const ensureWhtType = (value: string): WhtType => (value === "Non-resident" ? "N
 const ensureServiceDayPart = (value: string): ServiceDayPart => {
   if (value === "morning" || value === "afternoon" || value === "evening") return value;
   return "full-day";
+};
+const ensureShiftCode = (value: string | null | undefined): ShiftCode => {
+  switch ((value ?? "").trim().toUpperCase()) {
+    case "M1":
+    case "M2":
+    case "A1":
+    case "A2":
+    case "E1":
+    case "E2":
+    case "N1":
+    case "N2":
+    case "ALL":
+      return (value ?? "").trim().toUpperCase() as ShiftCode;
+    default:
+      return "ALL";
+  }
 };
 
 const parseAppearanceTags = (value: string) =>
@@ -883,6 +905,38 @@ export const mockApi = {
         date: payload.date || null,
         subject: payload.subject,
         body: payload.body,
+      }),
+    });
+    return mapTimelineData(timeline);
+  },
+
+  async getGuideBookingShifts(bookingId: string, guideId: number): Promise<GuideBookingShift[]> {
+    const shifts = await request<ApiGuideBookingShift[]>(
+      `/api/timeline/guide-booking-shifts/${encodeURIComponent(bookingId)}/${guideId}`,
+    );
+
+    return (shifts ?? [])
+      .filter((entry) => Boolean(entry.date))
+      .map((entry) => ({
+        date: entry.date ?? "",
+        shift: ensureShiftCode(entry.shift),
+      }));
+  },
+
+  async setGuideBookingShifts(
+    bookingId: string,
+    guideId: number,
+    entries: GuideBookingShift[],
+  ): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>("/api/timeline/guide-booking-shifts", {
+      method: "POST",
+      body: JSON.stringify({
+        bookingId,
+        guideId,
+        entries: entries.map((entry) => ({
+          date: entry.date,
+          shift: ensureShiftCode(entry.shift),
+        })),
       }),
     });
     return mapTimelineData(timeline);
