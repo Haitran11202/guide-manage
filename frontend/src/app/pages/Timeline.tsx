@@ -2242,7 +2242,7 @@ export function Timeline() {
                               {event.type === "tour" && !isCancelledEvent(event) && zoomLevel !== 1 && (
                                 <div className="w-full h-full flex items-center px-1.5">
                                   <span className="text-[9px] font-black text-white uppercase tracking-widest truncate">
-                                    {String(event.data.client ?? "").trim()}
+                                    {String(event.data.tourName ?? event.data.client ?? "").trim()}
                                   </span>
                                 </div>
                               )}
