@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { AlertCircle, CheckSquare, ChevronLeft, Clock3, FileText, Mail, Search, UserCheck, X } from "lucide-react";
 import { buildGuideEmailKey } from "../../mock/api";
-import type { GuideEmailRecord, ServiceDayPart } from "../../mock/types";
+import type { GuideEmailRecord, ServiceDayPart, ShiftCode } from "../../mock/types";
 
 type DailyColumnItem = {
   id: string;
@@ -21,7 +21,21 @@ type GuideAvailability = {
   color: string;
   selectable: boolean;
   requiresTimeInput?: boolean;
+  requiresShiftSelection: boolean;
+  availableShiftCodes: ShiftCode[];
+  busyShiftCodes: ShiftCode[];
 };
+
+const SHIFT_TAGS: Array<{ value: ShiftCode; label: string }> = [
+  { value: "M1", label: "M1" },
+  { value: "M2", label: "M2" },
+  { value: "A1", label: "A1" },
+  { value: "A2", label: "A2" },
+  { value: "E1", label: "E1" },
+  { value: "E2", label: "E2" },
+  { value: "N1", label: "N1" },
+  { value: "N2", label: "N2" },
+];
 
 type TimelineBookingAssignmentModalProps = {
   activeAssignmentBooking: any | null;
@@ -33,6 +47,7 @@ type TimelineBookingAssignmentModalProps = {
   guideSearchTerm: string;
   filteredGuidesForModal: any[];
   selectedGuideId: number | null;
+  selectedGuideShiftCode: ShiftCode | null;
   availabilityLoading: boolean;
   availabilityError: string | null;
   showUnassignDialog: boolean;
@@ -56,6 +71,7 @@ type TimelineBookingAssignmentModalProps = {
   onCloseGuideSelector: () => void;
   onGuideSearchTermChange: (value: string) => void;
   onSelectGuide: (guideId: number) => void;
+  onSelectGuideShift: (guideId: number, shiftCode: ShiftCode) => void;
   onConfirmAssignment: () => void;
   onClearSelectedItems: () => void;
   onCancelUnassign: () => void;
@@ -88,6 +104,7 @@ export function TimelineBookingAssignmentModal({
   guideSearchTerm,
   filteredGuidesForModal,
   selectedGuideId,
+  selectedGuideShiftCode,
   availabilityLoading,
   availabilityError,
   showUnassignDialog,
@@ -111,6 +128,7 @@ export function TimelineBookingAssignmentModal({
   onCloseGuideSelector,
   onGuideSearchTermChange,
   onSelectGuide,
+  onSelectGuideShift,
   onConfirmAssignment,
   onClearSelectedItems,
   onCancelUnassign,
@@ -138,8 +156,6 @@ export function TimelineBookingAssignmentModal({
       }),
     [dailyColumns],
   );
-  console.log(dailyColumns);
-  
   const guideExceptionLabels = useMemo(() => {
     if (!activeAssignmentBooking) return new Map<string, string>();
 
@@ -458,7 +474,7 @@ export function TimelineBookingAssignmentModal({
                 <div>
                   <h3 className="text-base font-black text-[#333] uppercase tracking-tight">Assign Guide</h3>
                   <p className="text-[9px] font-bold text-[#333]/55 uppercase tracking-widest mt-1">
-                    Assigning {selectedItemsToAssign.size} blocks
+                    Assigning {selectedItemsToAssign.size} services
                   </p>
                 </div>
                 <button
@@ -482,7 +498,7 @@ export function TimelineBookingAssignmentModal({
                 <div className="mt-3 text-[10px] font-bold text-[#333]/55">
                   {availabilityLoading
                     ? "Checking guide availability for the selected services..."
-                    : availabilityError || "Only guides free on every selected service date are selectable. Shift is fixed as ALL."}
+                    : availabilityError || "Fully free guides use ALL by default. Guides that are partially busy require choosing one free shift below."}
                 </div>
               </div>
               <div className="p-4 overflow-auto flex-1 space-y-2 bg-[#C4E8FF]/10">
@@ -493,12 +509,12 @@ export function TimelineBookingAssignmentModal({
                     const availability = getGuideAvailability(guide);
 
                     const isSelected = selectedGuideId === guide.id;
+                    const showShiftTags = availability.requiresShiftSelection && availability.availableShiftCodes.length > 0;
 
                     return (
-                      <button
+                      <div
                         key={guide.id}
-                        type="button"
-                        onClick={() => availability.selectable && onSelectGuide(guide.id)}
+                        onClick={() => !showShiftTags && availability.selectable && onSelectGuide(guide.id)}
                         className={`w-full p-4 rounded-2xl border-2 transition-all flex items-center justify-between text-left ${isSelected
                             ? "border-[#F3796A] bg-[#F3796A]/5 shadow-sm"
                             : availability.selectable
@@ -511,6 +527,38 @@ export function TimelineBookingAssignmentModal({
                           <div className="text-[10px] font-bold text-[#333]/45 mt-0.5">
                             {guide.tags.join(" / ")}
                           </div>
+                          {showShiftTags && (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {SHIFT_TAGS.map((shiftTag) => {
+                                const isShiftAvailable = availability.availableShiftCodes.includes(shiftTag.value);
+                                const isShiftSelected =
+                                  isSelected && selectedGuideShiftCode === shiftTag.value;
+
+                                return (
+                                  <button
+                                    key={`${guide.id}-${shiftTag.value}`}
+                                    type="button"
+                                    disabled={!isShiftAvailable}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      if (isShiftAvailable) {
+                                        onSelectGuideShift(guide.id, shiftTag.value);
+                                      }
+                                    }}
+                                    className={`rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-widest transition-all ${
+                                      isShiftSelected
+                                        ? "border-[#F3796A] bg-[#F3796A] text-white"
+                                        : isShiftAvailable
+                                          ? "border-[#C4E8FF] bg-white text-[#333] hover:border-[#F3796A] hover:text-[#F3796A]"
+                                          : "border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed"
+                                    }`}
+                                  >
+                                    {shiftTag.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                         <div className="flex items-center gap-3">
                           <span className={`text-[10px] font-black uppercase tracking-widest ${availability.color}`}>
@@ -524,18 +572,18 @@ export function TimelineBookingAssignmentModal({
                           )}
                           {isSelected && (
                             <span className="px-2 py-1 rounded-full bg-[#F3796A] text-white text-[8px] font-black uppercase tracking-widest">
-                              Selected
+                              {selectedGuideShiftCode ?? "Selected"}
                             </span>
                           )}
                         </div>
-                      </button>
+                      </div>
                     );
                   })
                 )}
               </div>
               <div className="p-5 border-t border-[#C4E8FF] bg-white shrink-0">
                 <button
-                  disabled={!selectedGuideId}
+                  disabled={!selectedGuideId || !selectedGuideShiftCode}
                   className="w-full bg-[#1D3663] text-white py-3.5 rounded-2xl text-xs font-black uppercase tracking-widest hover:brightness-95 transition-all disabled:opacity-50 shadow-lg disabled:shadow-none flex items-center justify-center gap-2"
                   onClick={onConfirmAssignment}
                 >

@@ -34,22 +34,6 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         string? maCa,
         CancellationToken cancellationToken)
     {
-        const string sqlWithoutShift = """
-            SELECT
-                g.Pid,
-                LTRIM(RTRIM(ISNULL(g.Guide, ''))) AS GuideName
-            FROM dbo.M_SupplierGuide g
-            WHERE UPPER(LTRIM(RTRIM(ISNULL(g.OnOff, '')))) = @OnOff
-              AND NOT EXISTS
-              (
-                  SELECT 1
-                  FROM dbo.M_GuideBusy gb
-                  WHERE gb.SupplierGuideXid = g.Pid
-                    AND CAST(gb.[Date] AS date) = @ArrDate
-              )
-            ORDER BY g.Guide;
-            """;
-
         var normalizedShiftCode = NormalizeShiftCode(maCa);
         var result = new List<AvailableGuideDto>();
 
@@ -58,23 +42,49 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
             await using var connection = connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             var shiftColumnSql = await GetGuideBusyShiftColumnSqlAsync(connection, null, cancellationToken);
-            var sqlWithShift = BuildAvailableGuidesSqlWithShift(shiftColumnSql);
-            await using var command = new SqlCommand(shiftColumnSql is not null ? sqlWithShift : sqlWithoutShift, connection);
+            await using var command = new SqlCommand(BuildAvailableGuidesSql(shiftColumnSql), connection);
             command.Parameters.Add("@OnOff", SqlDbType.VarChar, 10).Value = ActiveGuideFlag;
             command.Parameters.Add("@ArrDate", SqlDbType.Date).Value = arrDate.Date;
-            if (shiftColumnSql is not null)
-            {
-                command.Parameters.Add("@MaCa", SqlDbType.VarChar, 10).Value = normalizedShiftCode;
-                command.Parameters.Add("@AllDayShiftCode", SqlDbType.VarChar, 10).Value = AllDayShiftCode;
-            }
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            var busyShiftsByGuide = new Dictionary<int, HashSet<string>>();
+            var guideNames = new Dictionary<int, string>();
+
             while (await reader.ReadAsync(cancellationToken))
             {
+                var guideId = reader.GetInt32(0);
+                var guideName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1).Trim();
+                var busyShift = reader.IsDBNull(2) ? null : reader.GetString(2);
+                var hasBusyRow = !reader.IsDBNull(3) && reader.GetInt32(3) == 1;
+
+                guideNames[guideId] = guideName;
+                if (!busyShiftsByGuide.TryGetValue(guideId, out var guideBusyShifts))
+                {
+                    guideBusyShifts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    busyShiftsByGuide[guideId] = guideBusyShifts;
+                }
+
+                foreach (var shiftCode in ExpandBusyShiftCodes(busyShift, hasBusyRow, shiftColumnSql is not null))
+                {
+                    guideBusyShifts.Add(shiftCode);
+                }
+            }
+
+            foreach (var guideEntry in guideNames.OrderBy(entry => entry.Value, StringComparer.OrdinalIgnoreCase))
+            {
+                var guideBusyShifts = busyShiftsByGuide.TryGetValue(guideEntry.Key, out var shifts)
+                    ? shifts
+                    : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var availableShiftCodes = ConcreteShiftCodes
+                    .Where(shiftCode => !guideBusyShifts.Contains(shiftCode))
+                    .ToArray();
+
                 result.Add(new AvailableGuideDto
                 {
-                    GuideId = reader.GetInt32(0),
-                    GuideName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1).Trim()
+                    GuideId = guideEntry.Key,
+                    GuideName = guideEntry.Value,
+                    BusyShiftCodes = guideBusyShifts.OrderBy(value => value).ToArray(),
+                    AvailableShiftCodes = availableShiftCodes
                 });
             }
 
@@ -477,6 +487,27 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
             ? ConcreteShiftCodes
             : [shiftCode];
 
+    private static IReadOnlyList<string> ExpandBusyShiftCodes(string? shiftCode, bool hasBusyRow, bool hasShiftColumn)
+    {
+        if (!hasBusyRow)
+        {
+            return [];
+        }
+
+        if (!hasShiftColumn)
+        {
+            return ConcreteShiftCodes;
+        }
+
+        var normalized = (shiftCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(normalized) || string.Equals(normalized, AllDayShiftCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return ConcreteShiftCodes;
+        }
+
+        return ValidShiftCodes.Contains(normalized) ? [normalized] : ConcreteShiftCodes;
+    }
+
     private static async Task RollbackAsync(SqlTransaction transaction)
     {
         if (transaction.Connection is not null)
@@ -653,6 +684,34 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
             _ => null
         };
     }
+
+    private static string BuildAvailableGuidesSql(string? shiftColumnSql) => shiftColumnSql is not null
+        ? $"""
+        SELECT
+            g.Pid,
+            LTRIM(RTRIM(ISNULL(g.Guide, ''))) AS GuideName,
+            CAST(gb.{shiftColumnSql} AS varchar(10)) AS BusyShiftCode,
+            CASE WHEN gb.Pid IS NULL THEN 0 ELSE 1 END AS HasBusyRow
+        FROM dbo.M_SupplierGuide g
+        LEFT JOIN dbo.M_GuideBusy gb
+            ON gb.SupplierGuideXid = g.Pid
+           AND CAST(gb.[Date] AS date) = @ArrDate
+        WHERE UPPER(LTRIM(RTRIM(ISNULL(g.OnOff, '')))) = @OnOff
+        ORDER BY g.Guide, gb.Pid;
+        """
+        : """
+        SELECT
+            g.Pid,
+            LTRIM(RTRIM(ISNULL(g.Guide, ''))) AS GuideName,
+            CAST(NULL AS varchar(10)) AS BusyShiftCode,
+            CASE WHEN gb.Pid IS NULL THEN 0 ELSE 1 END AS HasBusyRow
+        FROM dbo.M_SupplierGuide g
+        LEFT JOIN dbo.M_GuideBusy gb
+            ON gb.SupplierGuideXid = g.Pid
+           AND CAST(gb.[Date] AS date) = @ArrDate
+        WHERE UPPER(LTRIM(RTRIM(ISNULL(g.OnOff, '')))) = @OnOff
+        ORDER BY g.Guide, gb.Pid;
+        """;
 
     private static string BuildAvailableGuidesSqlWithShift(string? shiftColumnSql) => $"""
         SELECT

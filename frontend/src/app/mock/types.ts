@@ -244,6 +244,8 @@ export type BookingManagerData = {
 export type AvailableGuide = {
   guideId: number;
   guideName: string;
+  busyShiftCodes: ShiftCode[];
+  availableShiftCodes: ShiftCode[];
 };
 
 export type AssignGuideToServiceRequest = {

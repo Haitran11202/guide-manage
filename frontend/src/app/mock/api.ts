@@ -141,6 +141,8 @@ type ApiAssignGuideToServicesResponse = {
 type ApiAvailableGuide = {
   guideId: number;
   guideName: string;
+  busyShiftCodes?: string[] | null;
+  availableShiftCodes?: string[] | null;
 };
 
 type ApiTimelineGuide = {
@@ -849,7 +851,13 @@ export const mockApi = {
       maCa,
     });
 
-    return request<ApiAvailableGuide[]>(`/api/service-guide-assignments/available-guides?${searchParams.toString()}`);
+    const guides = await request<ApiAvailableGuide[]>(`/api/service-guide-assignments/available-guides?${searchParams.toString()}`);
+    return (guides ?? []).map((guide) => ({
+      guideId: guide.guideId,
+      guideName: guide.guideName,
+      busyShiftCodes: (guide.busyShiftCodes ?? []).map((shiftCode) => ensureShiftCode(shiftCode)),
+      availableShiftCodes: (guide.availableShiftCodes ?? []).map((shiftCode) => ensureShiftCode(shiftCode)),
+    }));
   },
 
   async confirmServiceGuide(resHolidayId: number): Promise<void> {

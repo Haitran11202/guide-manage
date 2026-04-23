@@ -16,8 +16,7 @@ IF COL_LENGTH('dbo.M_GuideBusy', 'Shift') IS NOT NULL
 BEGIN
     UPDATE dbo.M_GuideBusy
     SET [Shift] = 'ALL'
-    WHERE ([Shift] IS NULL OR LTRIM(RTRIM([Shift])) = '')
-      AND Busy IN ('P', 'D', 'B');
+    WHERE [Shift] IS NULL OR LTRIM(RTRIM([Shift])) = '';
 END
 GO
 

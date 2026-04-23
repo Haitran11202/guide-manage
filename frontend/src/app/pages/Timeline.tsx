@@ -27,6 +27,7 @@ import { TimelineBookingsTab } from "../components/timeline/TimelineBookingsTab"
 import { LoadingOverlay } from "../components/ui/LoadingOverlay";
 import type {
   BookingManagerDay,
+  AvailableGuide,
   CountryOption,
   GuideEmailRecord,
   GuideTimeException,
@@ -80,6 +81,16 @@ type GuideTimingModalState = {
   description: string;
   drafts: GuideTimeRangeDraft[];
 } | null;
+
+type GuideAvailability = {
+  label: string;
+  color: string;
+  selectable: boolean;
+  requiresTimeInput?: boolean;
+  requiresShiftSelection: boolean;
+  availableShiftCodes: ShiftCode[];
+  busyShiftCodes: ShiftCode[];
+};
 
 type PendingGuideStatusChange = {
   bookingId: string;
@@ -184,6 +195,7 @@ const SHIFT_OPTIONS: Array<{ value: ShiftCode; label: string }> = [
   { value: "N1", label: "Night 1" },
   { value: "N2", label: "Night 2" },
 ];
+const CONCRETE_SHIFT_OPTIONS = SHIFT_OPTIONS.filter((option) => option.value !== "ALL");
 
 const formatDateInputValue = (value: Date) => {
   const year = value.getFullYear();
@@ -639,8 +651,9 @@ export function Timeline() {
 
   const [showGuideSelector, setShowGuideSelector] = useState(false);
   const [selectedGuideId, setSelectedGuideId] = useState<number | null>(null);
+  const [selectedGuideShiftCode, setSelectedGuideShiftCode] = useState<ShiftCode | null>(null);
   const [guideSearchTerm, setGuideSearchTerm] = useState("");
-  const [availableGuideIds, setAvailableGuideIds] = useState<Set<number>>(new Set());
+  const [guideAvailabilityById, setGuideAvailabilityById] = useState<Map<number, GuideAvailability>>(new Map());
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
 
@@ -1180,7 +1193,7 @@ export function Timeline() {
     if (!showGuideSelector || !activeAssignmentBooking) {
       setAvailabilityLoading(false);
       setAvailabilityError(null);
-      setAvailableGuideIds(new Set());
+      setGuideAvailabilityById(new Map());
       return;
     }
 
@@ -1195,7 +1208,7 @@ export function Timeline() {
 
     if (targetDates.length === 0) {
       setAvailabilityError("No service dates were found for the selected services.");
-      setAvailableGuideIds(new Set());
+      setGuideAvailabilityById(new Map());
       return;
     }
 
@@ -1213,22 +1226,80 @@ export function Timeline() {
           return;
         }
 
-        const nextAvailableGuideIds = availabilityResponses.reduce<Set<number>>((current, guides, index) => {
-          const guideIds = new Set(guides.map((guide) => guide.guideId));
-          if (index === 0) {
-            return guideIds;
+        const aggregatedAvailability = new Map<number, GuideAvailability>();
+
+        availabilityResponses.forEach((guides, responseIndex) => {
+          guides.forEach((guide) => {
+            const dateAvailableShifts = guide.availableShiftCodes.filter((shiftCode) => shiftCode !== "ALL");
+            const dateBusyShifts = guide.busyShiftCodes.filter((shiftCode) => shiftCode !== "ALL");
+            const current = aggregatedAvailability.get(guide.guideId);
+
+            if (!current) {
+              aggregatedAvailability.set(guide.guideId, {
+                label: "Available",
+                color: "text-[#1D3663]",
+                selectable: dateAvailableShifts.length > 0,
+                requiresShiftSelection: dateBusyShifts.length > 0,
+                availableShiftCodes: [...dateAvailableShifts],
+                busyShiftCodes: [...dateBusyShifts],
+              });
+              return;
+            }
+
+            const nextAvailableShifts = current.availableShiftCodes.filter((shiftCode) =>
+              dateAvailableShifts.includes(shiftCode),
+            );
+            const nextBusyShifts = Array.from(new Set([...current.busyShiftCodes, ...dateBusyShifts])).sort();
+
+            aggregatedAvailability.set(guide.guideId, {
+              ...current,
+              selectable: nextAvailableShifts.length > 0,
+              requiresShiftSelection: current.requiresShiftSelection || dateBusyShifts.length > 0,
+              availableShiftCodes: nextAvailableShifts,
+              busyShiftCodes: nextBusyShifts,
+            });
+          });
+
+          if (responseIndex > 0) {
+            Array.from(aggregatedAvailability.keys()).forEach((guideId) => {
+              if (!guides.some((guide) => guide.guideId === guideId)) {
+                aggregatedAvailability.set(guideId, {
+                  label: "Busy",
+                  color: "text-[#F3796A]",
+                  selectable: false,
+                  requiresShiftSelection: true,
+                  availableShiftCodes: [],
+                  busyShiftCodes: CONCRETE_SHIFT_OPTIONS.map((option) => option.value),
+                });
+              }
+            });
           }
+        });
 
-          return new Set(Array.from(current).filter((guideId) => guideIds.has(guideId)));
-        }, new Set<number>());
+        const nextAvailabilityById = new Map<number, GuideAvailability>();
+        aggregatedAvailability.forEach((availability, guideId) => {
+          const isFullyFree = availability.availableShiftCodes.length === CONCRETE_SHIFT_OPTIONS.length
+            && availability.busyShiftCodes.length === 0;
+          const isSelectable = availability.availableShiftCodes.length > 0;
 
-        setAvailableGuideIds(nextAvailableGuideIds);
+          nextAvailabilityById.set(guideId, {
+            ...availability,
+            label: isSelectable
+              ? availability.requiresShiftSelection ? "Select shift" : "Available"
+              : "Busy",
+            color: isSelectable ? "text-[#1D3663]" : "text-[#F3796A]",
+            selectable: isSelectable,
+            requiresShiftSelection: !isFullyFree && availability.requiresShiftSelection,
+          });
+        });
+
+        setGuideAvailabilityById(nextAvailabilityById);
       } catch (error) {
         if (!active) {
           return;
         }
 
-        setAvailableGuideIds(new Set());
+        setGuideAvailabilityById(new Map());
         setAvailabilityError(error instanceof Error ? error.message : "Unable to load available guides.");
       } finally {
         if (active) {
@@ -1243,10 +1314,29 @@ export function Timeline() {
   }, [activeAssignmentBooking, selectedItemsToAssign, serviceDateByItemId, showGuideSelector]);
 
   useEffect(() => {
-    if (selectedGuideId && !availableGuideIds.has(selectedGuideId)) {
-      setSelectedGuideId(null);
+    if (!selectedGuideId) {
+      return;
     }
-  }, [availableGuideIds, selectedGuideId]);
+
+    const availability = guideAvailabilityById.get(selectedGuideId);
+    if (!availability?.selectable) {
+      setSelectedGuideId(null);
+      setSelectedGuideShiftCode(null);
+      return;
+    }
+
+    if (
+      availability.requiresShiftSelection &&
+      (!selectedGuideShiftCode || !availability.availableShiftCodes.includes(selectedGuideShiftCode))
+    ) {
+      setSelectedGuideShiftCode(null);
+      return;
+    }
+
+    if (!availability.requiresShiftSelection && selectedGuideShiftCode !== "ALL") {
+      setSelectedGuideShiftCode("ALL");
+    }
+  }, [guideAvailabilityById, selectedGuideId, selectedGuideShiftCode]);
 
   const getGuideAssignedDatesForBooking = (guideId: number) => {
     return Array.from(
@@ -1331,17 +1421,38 @@ export function Timeline() {
 
   const getGuideAvailability = (guide: any) => {
     if (!showGuideSelector) {
-      return { label: "Available", color: "text-[#1D3663]", selectable: true, requiresTimeInput: false };
+      return {
+        label: "Available",
+        color: "text-[#1D3663]",
+        selectable: true,
+        requiresTimeInput: false,
+        requiresShiftSelection: false,
+        availableShiftCodes: CONCRETE_SHIFT_OPTIONS.map((option) => option.value),
+        busyShiftCodes: [],
+      };
     }
 
     if (availabilityLoading) {
-      return { label: "Checking...", color: "text-[#1D3663]", selectable: false, requiresTimeInput: false };
+      return {
+        label: "Checking...",
+        color: "text-[#1D3663]",
+        selectable: false,
+        requiresTimeInput: false,
+        requiresShiftSelection: false,
+        availableShiftCodes: [],
+        busyShiftCodes: [],
+      };
     }
 
-    const isAvailable = availableGuideIds.has(guide.id);
-    return isAvailable
-      ? { label: "Available", color: "text-[#1D3663]", selectable: true, requiresTimeInput: false }
-      : { label: "Busy", color: "text-[#F3796A]", selectable: false, requiresTimeInput: false };
+    return guideAvailabilityById.get(guide.id) ?? {
+      label: "Busy",
+      color: "text-[#F3796A]",
+      selectable: false,
+      requiresTimeInput: false,
+      requiresShiftSelection: false,
+      availableShiftCodes: [],
+      busyShiftCodes: CONCRETE_SHIFT_OPTIONS.map((option) => option.value),
+    };
   };
   const handleClearBookingFilters = () => {
     setModalSearchTerm("");
@@ -1369,6 +1480,7 @@ export function Timeline() {
     setSelectedItemsToAssign(new Set());
     setShowGuideSelector(false);
     setSelectedGuideId(null);
+    setSelectedGuideShiftCode(null);
     setEmailComposerState(null);
   };
 
@@ -1381,6 +1493,8 @@ export function Timeline() {
     setShowGuideSelector(false);
     setShowUnassignDialog(false);
     setPendingUnassignGuide(null);
+    setSelectedGuideId(null);
+    setSelectedGuideShiftCode(null);
     setEmailComposerState(null);
     if (shouldRefreshSeries) {
       void refreshBookingSeriesPage(bookingToRefresh);
@@ -1393,6 +1507,7 @@ export function Timeline() {
     setSelectedItemsToAssign(new Set());
     setShowGuideSelector(false);
     setSelectedGuideId(null);
+    setSelectedGuideShiftCode(null);
     setEmailComposerState(null);
   };
 
@@ -1554,8 +1669,21 @@ export function Timeline() {
   };
 
   const handleSelectGuide = (guideId: number) => {
-    if (!availableGuideIds.has(guideId)) return;
+    const availability = guideAvailabilityById.get(guideId);
+    if (!availability?.selectable) return;
+    if (availability.requiresShiftSelection) return;
     setSelectedGuideId(guideId);
+    setSelectedGuideShiftCode("ALL");
+  };
+
+  const handleSelectGuideShift = (guideId: number, shiftCode: ShiftCode) => {
+    const availability = guideAvailabilityById.get(guideId);
+    if (!availability?.selectable || !availability.availableShiftCodes.includes(shiftCode)) {
+      return;
+    }
+
+    setSelectedGuideId(guideId);
+    setSelectedGuideShiftCode(shiftCode);
   };
 
   const handleGuideTimingDraftChange = (date: string, shift: ShiftCode) => {
@@ -1614,7 +1742,7 @@ export function Timeline() {
       await mockApi.assignGuideToServices({
         supplierGuideXid: selectedGuideId,
         items: assignmentItems,
-        maCa: "ALL",
+        maCa: selectedGuideShiftCode ?? "ALL",
         assignedBy: 1,
         operatorNote: "",
       });
@@ -1626,6 +1754,7 @@ export function Timeline() {
     setShowGuideSelector(false);
     setSelectedItemsToAssign(new Set());
     setSelectedGuideId(null);
+    setSelectedGuideShiftCode(null);
   };
 
   const handleStartUnassignGuide = (guideName: string) => {
@@ -2477,6 +2606,7 @@ export function Timeline() {
           guideSearchTerm={guideSearchTerm}
           filteredGuidesForModal={filteredGuidesForModal}
           selectedGuideId={selectedGuideId}
+          selectedGuideShiftCode={selectedGuideShiftCode}
           availabilityLoading={availabilityLoading}
           availabilityError={availabilityError}
           showUnassignDialog={showUnassignDialog}
@@ -2508,14 +2638,17 @@ export function Timeline() {
           onItemTimeSlotChange={handleItemTimeSlotChange}
           onOpenGuideSelector={() => {
             setSelectedGuideId(null);
+            setSelectedGuideShiftCode(null);
             setShowGuideSelector(true);
           }}
           onCloseGuideSelector={() => {
             setShowGuideSelector(false);
             setSelectedGuideId(null);
+            setSelectedGuideShiftCode(null);
           }}
           onGuideSearchTermChange={setGuideSearchTerm}
           onSelectGuide={handleSelectGuide}
+          onSelectGuideShift={handleSelectGuideShift}
           onConfirmAssignment={handleConfirmAssignment}
           onClearSelectedItems={handleClearSelectedItems}
           onCancelUnassign={handleCancelUnassignGuide}
