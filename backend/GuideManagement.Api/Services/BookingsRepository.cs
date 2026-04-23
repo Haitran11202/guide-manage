@@ -300,16 +300,23 @@ public sealed class BookingsRepository(
             .ToDictionary(group => group.Key, group => (IReadOnlyList<BookingsGuideTimeExceptionDto>)group.ToArray());
 
         var busyDatesByGuide = busyDateRows
-            .Where(row => IsConfirmed(row.Busy))
+            .Where(row => IsPersonalBusy(row.Busy, row.ResHolidayXid))
             .GroupBy(row => row.GuideId)
             .ToDictionary(
                 group => group.Key,
-                group => (IReadOnlyList<BookingsBusyDateDto>)group.Select(row => new BookingsBusyDateDto
-                {
-                    Id = $"busy-{row.Pid}",
-                    From = DateOnly.FromDateTime(row.Date),
-                    To = DateOnly.FromDateTime(row.Date)
-                }).ToArray());
+                group => (IReadOnlyList<BookingsBusyDateDto>)group
+                    .GroupBy(row => DateOnly.FromDateTime(row.Date))
+                    .Select(dateGroup =>
+                    {
+                        var row = dateGroup.OrderBy(item => item.Pid).First();
+                        return new BookingsBusyDateDto
+                        {
+                            Id = $"busy-{row.Pid}",
+                            From = DateOnly.FromDateTime(row.Date),
+                            To = DateOnly.FromDateTime(row.Date)
+                        };
+                    })
+                    .ToArray());
 
         var guidesData = guideRows
             .Select(guideRow => new BookingsGuideDto
@@ -571,7 +578,8 @@ ORDER BY res.ArrDate, res.Pid;";
                 gb.Pid,
                 gb.SupplierGuideXid AS GuideId,
                 gb.[Date],
-                gb.Busy
+                gb.Busy,
+                gb.ResHolidayXid
             FROM dbo.M_GuideBusy gb;
             """;
 
@@ -806,6 +814,17 @@ ORDER BY res.ArrDate, res.Pid;";
         return normalized is "Y" or "1" or "T" or "P" or "D" or "B";
     }
 
+    private static bool IsPersonalBusy(string? flag, int? resHolidayXid)
+    {
+        if (resHolidayXid.HasValue)
+        {
+            return false;
+        }
+
+        var normalized = (flag ?? string.Empty).Trim().ToUpperInvariant();
+        return normalized is "Y" or "1" or "T" or "B";
+    }
+
     private static string BuildManagerServiceLabel(string? serviceName)
     {
         if (string.IsNullOrWhiteSpace(serviceName)) return string.Empty;
@@ -871,5 +890,5 @@ ORDER BY res.ArrDate, res.Pid;";
         string? ServiceName,
         string? Holiday);
 
-    private sealed record BusyDateRow(int Pid, int GuideId, DateTime Date, string Busy);
+    private sealed record BusyDateRow(int Pid, int GuideId, DateTime Date, string Busy, int? ResHolidayXid);
 }

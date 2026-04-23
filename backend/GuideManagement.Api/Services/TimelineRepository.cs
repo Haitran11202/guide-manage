@@ -10,6 +10,17 @@ public sealed class TimelineRepository(
 {
     private const int BookingSeriesPageSize = 10;
     private const string AllDayShiftCode = "ALL";
+    private static readonly string[] ConcreteShiftCodes =
+    {
+        "M1",
+        "M2",
+        "A1",
+        "A2",
+        "E1",
+        "E2",
+        "N1",
+        "N2"
+    };
     private static readonly HashSet<string> SupportedShiftCodes = new(StringComparer.OrdinalIgnoreCase)
     {
         AllDayShiftCode,
@@ -332,22 +343,62 @@ public sealed class TimelineRepository(
             return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
         }
 
-        const string sql = """
-            DELETE FROM dbo.M_GuideBusy
-            WHERE Pid = @Pid AND SupplierGuideXid = @GuideId;
-            """;
-
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await connection.ExecuteAsync(
+        var target = await connection.QueryFirstOrDefaultAsync<BusyDateDeleteTargetRow>(
             new CommandDefinition(
-                sql,
+                """
+                SELECT TOP (1)
+                    CAST(gb.[Date] AS date) AS BusyDate,
+                    gb.ResHolidayXid
+                FROM dbo.M_GuideBusy gb
+                WHERE gb.Pid = @Pid
+                  AND gb.SupplierGuideXid = @GuideId;
+                """,
                 new
                 {
                     Pid = pid.Value,
                     GuideId = guideId
                 },
                 cancellationToken: cancellationToken));
+
+        if (target is null)
+        {
+            return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
+        }
+
+        if (target.ResHolidayXid is null)
+        {
+            await connection.ExecuteAsync(
+                new CommandDefinition(
+                    """
+                    DELETE FROM dbo.M_GuideBusy
+                    WHERE SupplierGuideXid = @GuideId
+                      AND ResHolidayXid IS NULL
+                      AND CAST([Date] AS date) = @BusyDate;
+                    """,
+                    new
+                    {
+                        GuideId = guideId,
+                        BusyDate = target.BusyDate.Date
+                    },
+                    cancellationToken: cancellationToken));
+        }
+        else
+        {
+            await connection.ExecuteAsync(
+                new CommandDefinition(
+                    """
+                    DELETE FROM dbo.M_GuideBusy
+                    WHERE Pid = @Pid AND SupplierGuideXid = @GuideId;
+                    """,
+                    new
+                    {
+                        Pid = pid.Value,
+                        GuideId = guideId
+                    },
+                    cancellationToken: cancellationToken));
+        }
 
         return await GetTimelineAsync(null, null, null, null, null, null, null, null, null, null, null, cancellationToken);
     }
@@ -594,30 +645,63 @@ public sealed class TimelineRepository(
             throw new InvalidOperationException("M_GuideBusy is missing the Shift column. Apply the latest SQL script before saving guide shifts.");
         }
 
-        var sql = BuildUpdateGuideBookingShiftSql(shiftColumnSql);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
 
         try
         {
             foreach (var entry in entries)
             {
-                var affectedRows = await connection.ExecuteScalarAsync<int>(
+                var busyTargets = (await connection.QueryAsync<GuideBusyTargetRow>(
                     new CommandDefinition(
-                        sql,
+                        BuildSelectGuideBookingBusyTargetsSql(),
                         new
                         {
                             BookingPid = bookingPid,
                             GuideId = request.GuideId,
-                            TargetDate = entry.Date.ToDateTime(TimeOnly.MinValue),
-                            Shift = entry.Shift
+                            TargetDate = entry.Date.ToDateTime(TimeOnly.MinValue)
+                        },
+                        transaction,
+                        cancellationToken: cancellationToken))).ToArray();
+
+                if (busyTargets.Length == 0)
+                {
+                    throw new InvalidOperationException(
+                        $"No matching guide busy record was found for guide {request.GuideId} on {entry.Date:yyyy-MM-dd}.");
+                }
+
+                await connection.ExecuteAsync(
+                    new CommandDefinition(
+                        """
+                        DELETE FROM dbo.M_GuideBusy
+                        WHERE SupplierGuideXid = @GuideId
+                          AND ResHolidayXid IN @ResHolidayXids
+                          AND CAST([Date] AS date) = CAST(@TargetDate AS date)
+                          AND UPPER(LTRIM(RTRIM(ISNULL(Busy, '')))) IN ('P', 'D');
+                        """,
+                        new
+                        {
+                            GuideId = request.GuideId,
+                            ResHolidayXids = busyTargets.Select(item => item.ResHolidayXid).ToArray(),
+                            TargetDate = entry.Date.ToDateTime(TimeOnly.MinValue)
                         },
                         transaction,
                         cancellationToken: cancellationToken));
 
-                if (affectedRows == 0)
+                foreach (var busyTarget in busyTargets)
                 {
-                    throw new InvalidOperationException(
-                        $"No matching guide busy record was found for guide {request.GuideId} on {entry.Date:yyyy-MM-dd}.");
+                    foreach (var shiftCode in ExpandShiftCodes(entry.Shift))
+                    {
+                        await InsertGuideBusyRowAsync(
+                            connection,
+                            transaction,
+                            shiftColumnSql,
+                            request.GuideId,
+                            busyTarget.ResHolidayXid,
+                            entry.Date.ToDateTime(TimeOnly.MinValue),
+                            shiftCode,
+                            busyTarget.Busy,
+                            cancellationToken);
+                    }
                 }
             }
 
@@ -723,8 +807,8 @@ public sealed class TimelineRepository(
         SELECT
             currentAssignment.ServiceDate AS [Date],
             CASE
-                WHEN COUNT(DISTINCT COALESCE(CAST(gb.{shiftColumnSql} AS varchar(10)), @AllDayShiftCode)) = 1
-                    THEN MAX(COALESCE(CAST(gb.{shiftColumnSql} AS varchar(10)), @AllDayShiftCode))
+                WHEN COUNT(DISTINCT COALESCE(NULLIF(LTRIM(RTRIM(CAST(gb.{shiftColumnSql} AS varchar(10)))), ''), @AllDayShiftCode)) = 1
+                    THEN MAX(COALESCE(NULLIF(LTRIM(RTRIM(CAST(gb.{shiftColumnSql} AS varchar(10)))), ''), @AllDayShiftCode))
                 ELSE @AllDayShiftCode
             END AS [Shift]
         FROM CurrentAssignments currentAssignment
@@ -776,7 +860,7 @@ public sealed class TimelineRepository(
         ORDER BY currentAssignment.ServiceDate;
         """;
 
-    private static string BuildUpdateGuideBookingShiftSql(string shiftColumnSql) => $"""
+    private static string BuildSelectGuideBookingBusyTargetsSql() => """
         DECLARE @ResXid int;
 
         SELECT TOP (1) @ResXid = rh.ResXid
@@ -809,8 +893,12 @@ public sealed class TimelineRepository(
               AND rh.ArrDate IS NOT NULL
               AND CAST(rh.ArrDate AS date) = CAST(@TargetDate AS date)
         )
-        UPDATE gb
-        SET gb.{shiftColumnSql} = @Shift
+        SELECT
+            gb.ResHolidayXid,
+            CASE
+                WHEN MAX(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(gb.Busy, '')))) = 'D' THEN 1 ELSE 0 END) = 1 THEN 'D'
+                ELSE 'P'
+            END AS Busy
         FROM dbo.M_GuideBusy gb
         INNER JOIN CurrentAssignments currentAssignment
             ON currentAssignment.ResHolidayXid = gb.ResHolidayXid
@@ -818,15 +906,59 @@ public sealed class TimelineRepository(
           AND gb.SupplierGuideXid = @GuideId
           AND gb.ResHolidayXid IS NOT NULL
           AND CAST(gb.[Date] AS date) = CAST(@TargetDate AS date)
-          AND UPPER(LTRIM(RTRIM(ISNULL(gb.Busy, '')))) IN ('P', 'D');
-
-        SELECT CAST(@@ROWCOUNT AS int);
+          AND UPPER(LTRIM(RTRIM(ISNULL(gb.Busy, '')))) IN ('P', 'D')
+        GROUP BY gb.ResHolidayXid;
         """;
 
     private static string NormalizeShiftCode(string? shift)
     {
         var normalized = (shift ?? string.Empty).Trim().ToUpperInvariant();
         return SupportedShiftCodes.Contains(normalized) ? normalized : AllDayShiftCode;
+    }
+
+    private static IReadOnlyList<string> ExpandShiftCodes(string shift)
+        => string.Equals(shift, AllDayShiftCode, StringComparison.OrdinalIgnoreCase)
+            ? ConcreteShiftCodes
+            : [shift];
+
+    private static async Task InsertGuideBusyRowAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        string shiftColumnSql,
+        int guideId,
+        int resHolidayId,
+        DateTime targetDate,
+        string shiftCode,
+        string busy,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new SqlCommand(
+            $"""
+            INSERT INTO dbo.M_GuideBusy
+            (
+                SupplierGuideXid,
+                [Date],
+                {shiftColumnSql},
+                Busy,
+                ResHolidayXid
+            )
+            VALUES
+            (
+                @GuideId,
+                @TargetDate,
+                @Shift,
+                @Busy,
+                @ResHolidayXid
+            );
+            """,
+            connection,
+            transaction);
+        command.Parameters.Add("@GuideId", System.Data.SqlDbType.Int).Value = guideId;
+        command.Parameters.Add("@TargetDate", System.Data.SqlDbType.Date).Value = targetDate.Date;
+        command.Parameters.Add("@Shift", System.Data.SqlDbType.VarChar, 10).Value = shiftCode;
+        command.Parameters.Add("@Busy", System.Data.SqlDbType.VarChar, 5).Value = busy;
+        command.Parameters.Add("@ResHolidayXid", System.Data.SqlDbType.Int).Value = resHolidayId;
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task<IReadOnlyList<TimelineBookingDto>> GetBookingsAsync(
@@ -998,7 +1130,8 @@ public sealed class TimelineRepository(
                 gb.Pid,
                 gb.SupplierGuideXid AS GuideId,
                 gb.[Date],
-                gb.Busy
+                gb.Busy,
+                gb.ResHolidayXid
             FROM dbo.M_GuideBusy gb;
             """;
 
@@ -1007,16 +1140,23 @@ public sealed class TimelineRepository(
         var rows = await connection.QueryAsync<BusyDateRow>(new CommandDefinition(sql, cancellationToken: cancellationToken));
 
         return rows
-            .Where(row => IsConfirmed(row.Busy))
+            .Where(row => IsPersonalBusy(row.Busy, row.ResHolidayXid))
             .GroupBy(row => row.GuideId)
             .ToDictionary(
                 group => group.Key,
-                group => (IReadOnlyList<BusyDateDto>)group.Select(row => new BusyDateDto
-                {
-                    Id = $"busy-{row.Pid}",
-                    From = DateOnly.FromDateTime(row.Date),
-                    To = DateOnly.FromDateTime(row.Date)
-                }).ToArray());
+                group => (IReadOnlyList<BusyDateDto>)group
+                    .GroupBy(row => DateOnly.FromDateTime(row.Date))
+                    .Select(dateGroup =>
+                    {
+                        var row = dateGroup.OrderBy(item => item.Pid).First();
+                        return new BusyDateDto
+                        {
+                            Id = $"busy-{row.Pid}",
+                            From = DateOnly.FromDateTime(row.Date),
+                            To = DateOnly.FromDateTime(row.Date)
+                        };
+                    })
+                    .ToArray());
     }
 
     private Dictionary<string, int> BuildBaseItemAssignments(
@@ -1261,6 +1401,17 @@ public sealed class TimelineRepository(
         return normalized is "Y" or "1" or "T" or "P" or "D" or "B";
     }
 
+    private static bool IsPersonalBusy(string? flag, int? resHolidayXid)
+    {
+        if (resHolidayXid.HasValue)
+        {
+            return false;
+        }
+
+        var normalized = (flag ?? string.Empty).Trim().ToUpperInvariant();
+        return normalized is "Y" or "1" or "T" or "B";
+    }
+
     private static bool MatchesBookingFilters(
         TimelineBookingDto booking,
         string? search,
@@ -1355,7 +1506,11 @@ public sealed class TimelineRepository(
         public DateOnly? MessageDate => SendSMSDate is null ? null : DateOnly.FromDateTime(SendSMSDate.Value);
     }
 
-    private sealed record BusyDateRow(int Pid, int GuideId, DateTime Date, string? Busy);
+    private sealed record BusyDateRow(int Pid, int GuideId, DateTime Date, string? Busy, int? ResHolidayXid);
+
+    private sealed record BusyDateDeleteTargetRow(DateTime BusyDate, int? ResHolidayXid);
+
+    private sealed record GuideBusyTargetRow(int ResHolidayXid, string Busy);
 
     private sealed record GuideBookingShiftRow(DateTime? Date, string? Shift);
 

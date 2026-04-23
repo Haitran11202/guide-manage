@@ -12,7 +12,7 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
     private const string PersonalBusyStatus = "B";
     private const string ActiveGuideFlag = "ON";
     private const string AllDayShiftCode = "ALL";
-    private static readonly HashSet<string> ValidShiftCodes =
+    private static readonly string[] ConcreteShiftCodes =
     [
         "M1",
         "M2",
@@ -21,7 +21,11 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         "E1",
         "E2",
         "N1",
-        "N2",
+        "N2"
+    ];
+    private static readonly HashSet<string> ValidShiftCodes =
+    [
+        ..ConcreteShiftCodes,
         AllDayShiftCode
     ];
 
@@ -323,19 +327,28 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         {
             var shiftColumnSql = await GetGuideBusyShiftColumnSqlAsync(connection, null, cancellationToken);
             await EnsureGuideExistsAsync(request.GuideId, connection, null, cancellationToken);
-
-            await using var command = new SqlCommand(
-                shiftColumnSql is not null ? BuildInsertPersonalBusySqlWithShift(shiftColumnSql) : insertBusySqlWithoutShift,
-                connection);
-            command.Parameters.Add("@GuideId", SqlDbType.Int).Value = request.GuideId;
-            command.Parameters.Add("@DateNghi", SqlDbType.Date).Value = request.DateNghi.Date;
             if (shiftColumnSql is not null)
             {
-                command.Parameters.Add("@CaNghi", SqlDbType.VarChar, 10).Value = normalizedShiftCode;
+                foreach (var shiftCode in ExpandShiftCodes(normalizedShiftCode))
+                {
+                    await using var command = new SqlCommand(BuildInsertPersonalBusySqlWithShift(shiftColumnSql), connection);
+                    command.Parameters.Add("@GuideId", SqlDbType.Int).Value = request.GuideId;
+                    command.Parameters.Add("@DateNghi", SqlDbType.Date).Value = request.DateNghi.Date;
+                    command.Parameters.Add("@CaNghi", SqlDbType.VarChar, 10).Value = shiftCode;
+                    command.Parameters.Add("@Busy", SqlDbType.VarChar, 5).Value = PersonalBusyStatus;
+                    command.Parameters.Add("@ResHolidayXid", SqlDbType.Int).Value = DBNull.Value;
+                    await command.ExecuteNonQueryAsync(cancellationToken);
+                }
             }
-            command.Parameters.Add("@Busy", SqlDbType.VarChar, 5).Value = PersonalBusyStatus;
-            command.Parameters.Add("@ResHolidayXid", SqlDbType.Int).Value = DBNull.Value;
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            else
+            {
+                await using var command = new SqlCommand(insertBusySqlWithoutShift, connection);
+                command.Parameters.Add("@GuideId", SqlDbType.Int).Value = request.GuideId;
+                command.Parameters.Add("@DateNghi", SqlDbType.Date).Value = request.DateNghi.Date;
+                command.Parameters.Add("@Busy", SqlDbType.VarChar, 5).Value = PersonalBusyStatus;
+                command.Parameters.Add("@ResHolidayXid", SqlDbType.Int).Value = DBNull.Value;
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
         }
         catch (Exception exception)
         {
@@ -459,6 +472,11 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         return normalized;
     }
 
+    private static IReadOnlyList<string> ExpandShiftCodes(string shiftCode)
+        => string.Equals(shiftCode, AllDayShiftCode, StringComparison.OrdinalIgnoreCase)
+            ? ConcreteShiftCodes
+            : [shiftCode];
+
     private static async Task RollbackAsync(SqlTransaction transaction)
     {
         if (transaction.Connection is not null)
@@ -496,16 +514,27 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
         bool hasShiftColumn,
         CancellationToken cancellationToken)
     {
-        await using var command = new SqlCommand(sql, connection, transaction);
-        command.Parameters.Add("@SupplierGuideXid", SqlDbType.Int).Value = guideId;
-        command.Parameters.Add("@ArrDate", SqlDbType.Date).Value = arrDate.Date;
         if (hasShiftColumn)
         {
-            command.Parameters.Add("@MaCa", SqlDbType.VarChar, 10).Value = maCa;
+            foreach (var shiftCode in ExpandShiftCodes(maCa))
+            {
+                await using var command = new SqlCommand(sql, connection, transaction);
+                command.Parameters.Add("@SupplierGuideXid", SqlDbType.Int).Value = guideId;
+                command.Parameters.Add("@ArrDate", SqlDbType.Date).Value = arrDate.Date;
+                command.Parameters.Add("@MaCa", SqlDbType.VarChar, 10).Value = shiftCode;
+                command.Parameters.Add("@Busy", SqlDbType.VarChar, 5).Value = busyStatus;
+                command.Parameters.Add("@ResHolidayXid", SqlDbType.Int).Value = resHolidayId;
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+            return;
         }
-        command.Parameters.Add("@Busy", SqlDbType.VarChar, 5).Value = busyStatus;
-        command.Parameters.Add("@ResHolidayXid", SqlDbType.Int).Value = resHolidayId;
-        await command.ExecuteNonQueryAsync(cancellationToken);
+
+        await using var fallbackCommand = new SqlCommand(sql, connection, transaction);
+        fallbackCommand.Parameters.Add("@SupplierGuideXid", SqlDbType.Int).Value = guideId;
+        fallbackCommand.Parameters.Add("@ArrDate", SqlDbType.Date).Value = arrDate.Date;
+        fallbackCommand.Parameters.Add("@Busy", SqlDbType.VarChar, 5).Value = busyStatus;
+        fallbackCommand.Parameters.Add("@ResHolidayXid", SqlDbType.Int).Value = resHolidayId;
+        await fallbackCommand.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task EnsureGuideExistsAsync(
@@ -642,6 +671,7 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
                     @MaCa = @AllDayShiftCode
                     OR UPPER(LTRIM(RTRIM(ISNULL(gb.{shiftColumnSql}, '')))) = @MaCa
                     OR UPPER(LTRIM(RTRIM(ISNULL(gb.{shiftColumnSql}, '')))) = @AllDayShiftCode
+                    OR LTRIM(RTRIM(ISNULL(gb.{shiftColumnSql}, ''))) = ''
                 )
           )
         ORDER BY g.Guide;
@@ -695,6 +725,7 @@ public sealed class GuideAssignmentService(ISqlConnectionFactory connectionFacto
               @MaCa = @AllDayShiftCode
               OR UPPER(LTRIM(RTRIM(ISNULL(gb.{shiftColumnSql}, '')))) = @MaCa
               OR UPPER(LTRIM(RTRIM(ISNULL(gb.{shiftColumnSql}, '')))) = @AllDayShiftCode
+              OR LTRIM(RTRIM(ISNULL(gb.{shiftColumnSql}, ''))) = ''
           )
           AND (gb.ResHolidayXid IS NULL OR gb.ResHolidayXid <> @ResHolidayId);
         """;
