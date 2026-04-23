@@ -126,6 +126,18 @@ const toDateKey = (value: Date) => value.toISOString().split("T")[0];
 
 const getBookingSeriesName = (booking: { series?: string | null }) => booking.series?.trim() || "NO SERIES";
 
+const extractResCodeFromBooking = (booking: { groupName?: string | null; ref?: string | null; id?: string | null }) => {
+  const groupName = String(booking.groupName ?? "").trim();
+  if (groupName) {
+    const slashIndex = groupName.indexOf("/");
+    return slashIndex > 0 ? groupName.slice(0, slashIndex).trim() : groupName;
+  }
+
+  const ref = String(booking.ref ?? "").trim();
+  const refMatch = ref.match(/(\d+)(?:\/\d+)?$/);
+  return refMatch?.[1] ?? (ref || String(booking.id ?? ""));
+};
+
 const getGuideAssignStatus = (booking: { guideStatuses?: Record<string, number> }, guideName: string) =>
   booking.guideStatuses?.[guideName] ?? 1;
 
@@ -2021,11 +2033,34 @@ export function Timeline() {
                   });
 
                   const events: any[] = [];
+                  const mergedTourDayMap = new Map<string, {
+                    resCode: string;
+                    guideStatus: "confirmed" | "requested";
+                    isCancelled: boolean;
+                    representativeTour: any;
+                    dateKeys: Set<string>;
+                  }>();
 
                   filteredTours.forEach((t: any) => {
+                    const resCode = extractResCodeFromBooking(t);
+                    const guideStatus = isGuideConfirmed(t, guide.name) ? "confirmed" : "requested";
+                    const isCancelled = t.status?.toLowerCase() === "cancelled";
+                    const mergeKey = `${resCode}|${guideStatus}|${isCancelled ? "1" : "0"}`;
+
+                    if (!mergedTourDayMap.has(mergeKey)) {
+                      mergedTourDayMap.set(mergeKey, {
+                        resCode,
+                        guideStatus,
+                        isCancelled,
+                        representativeTour: t,
+                        dateKeys: new Set<string>(),
+                      });
+                    }
+
+                    const currentMerge = mergedTourDayMap.get(mergeKey)!;
                     let hasAnyAssignmentForBooking = false;
                     let hasDetailedAssignmentsForThisGuide = false;
-                    let assignedDays = new Set<number>();
+                    const assignedDays = new Set<number>();
 
                     Object.entries(itemAssignments).forEach(([itemId, gId]) => {
                       if (itemId.startsWith(`${t.id}-`)) {
@@ -2039,44 +2074,68 @@ export function Timeline() {
                     });
 
                     if (hasAnyAssignmentForBooking) {
-                      if (hasDetailedAssignmentsForThisGuide && assignedDays.size > 0) {
-                        const sortedDays = Array.from(assignedDays).sort((a, b) => a - b);
-                        let blockStart = sortedDays[0];
-                        let blockEnd = sortedDays[0];
-
-                        const pushBlock = (sDay: number, eDay: number) => {
-                          const d = new Date(`${t.startDay}T00:00:00`);
-                          d.setDate(d.getDate() + (sDay - 1));
-                          const y = d.getFullYear();
-                          const m = String(d.getMonth() + 1).padStart(2, "0");
-                          const day = String(d.getDate()).padStart(2, "0");
-                          const startStr = `${y}-${m}-${day}`;
-
-                          events.push({
-                            type: "tour", start: startStr, duration: (eDay - sDay + 1), data: t,
-                            guideStatus: isGuideConfirmed(t, guide.name) ? "confirmed" : "requested",
-                            isCancelled: t.status?.toLowerCase() === "cancelled"
-                          });
-                        };
-
-                        for (let i = 1; i < sortedDays.length; i++) {
-                          if (sortedDays[i] === blockEnd + 1) {
-                            blockEnd = sortedDays[i];
-                          } else {
-                            pushBlock(blockStart, blockEnd);
-                            blockStart = sortedDays[i];
-                            blockEnd = sortedDays[i];
-                          }
-                        }
-                        pushBlock(blockStart, blockEnd);
+                      if (!hasDetailedAssignmentsForThisGuide || assignedDays.size === 0) {
+                        return;
                       }
-                    } else {
-                      events.push({
-                        type: "tour", start: t.startDay, duration: t.duration, data: t,
-                        guideStatus: isGuideConfirmed(t, guide.name) ? "confirmed" : "requested",
-                        isCancelled: t.status?.toLowerCase() === "cancelled"
+
+                      assignedDays.forEach((dayNumber) => {
+                        const date = new Date(`${t.startDay}T00:00:00`);
+                        date.setDate(date.getDate() + (dayNumber - 1));
+                        currentMerge.dateKeys.add(toDateKey(date));
                       });
+                      return;
                     }
+
+                    const normalizedDuration = Math.max(1, t.duration);
+                    for (let day = 0; day < normalizedDuration; day += 1) {
+                      const date = new Date(`${t.startDay}T00:00:00`);
+                      date.setDate(date.getDate() + day);
+                      currentMerge.dateKeys.add(toDateKey(date));
+                    }
+                  });
+
+                  mergedTourDayMap.forEach((mergedTour) => {
+                    const sortedDates = Array.from(mergedTour.dateKeys)
+                      .sort((left, right) => new Date(`${left}T00:00:00`).getTime() - new Date(`${right}T00:00:00`).getTime());
+
+                    if (sortedDates.length === 0) {
+                      return;
+                    }
+
+                    let blockStart = sortedDates[0];
+                    let previousDate = sortedDates[0];
+
+                    const pushMergedBlock = (startDate: string, endDate: string) => {
+                      const startMs = new Date(`${startDate}T00:00:00`).getTime();
+                      const endMs = new Date(`${endDate}T00:00:00`).getTime();
+                      const duration = Math.round((endMs - startMs) / 86400000) + 1;
+
+                      events.push({
+                        type: "tour",
+                        start: startDate,
+                        duration,
+                        data: mergedTour.representativeTour,
+                        guideStatus: mergedTour.guideStatus,
+                        isCancelled: mergedTour.isCancelled,
+                        resCode: mergedTour.resCode,
+                      });
+                    };
+
+                    for (let index = 1; index < sortedDates.length; index += 1) {
+                      const currentDate = sortedDates[index];
+                      const previousMs = new Date(`${previousDate}T00:00:00`).getTime();
+                      const currentMs = new Date(`${currentDate}T00:00:00`).getTime();
+                      const isConsecutive = currentMs - previousMs === 86400000;
+
+                      if (!isConsecutive) {
+                        pushMergedBlock(blockStart, previousDate);
+                        blockStart = currentDate;
+                      }
+
+                      previousDate = currentDate;
+                    }
+
+                    pushMergedBlock(blockStart, previousDate);
                   });
 
                   guide.busyDates.forEach((b: any) => {
