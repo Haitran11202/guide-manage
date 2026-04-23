@@ -321,6 +321,7 @@ export function Timeline() {
   const debouncedFilterGuide = useDebouncedValue(filterGuide, 300);
 
   const [hoveredSeries, setHoveredSeries] = useState<string | null>(null);
+  const [hoveredBookingId, setHoveredBookingId] = useState<string | null>(null);
 
   const [bookingsData, setBookingsData] = useState<Booking[]>([]);
   const [bookingSeries, setBookingSeries] = useState<TimelineBookingSeries[]>([]);
@@ -2231,7 +2232,10 @@ export function Timeline() {
                             const widthStyle = `calc(${(event.duration / totalDaysInRange) * 100}% - 4px)`;
 
                             const seriesName = event.type === "tour" ? getBookingSeriesName(event.data) : null;
-                            const isDimmed = hoveredSeries && seriesName && hoveredSeries !== seriesName;
+                            const bookingId = event.type === "tour" ? event.data?.id : null;
+                            const isDimmed =
+                              (hoveredSeries && seriesName && hoveredSeries !== seriesName) ||
+                              (hoveredBookingId && event.type === "tour" && bookingId !== hoveredBookingId);
 
                             const getTooltip = () => {
                               if (event.type === "busy") return "Busy";
@@ -2245,8 +2249,11 @@ export function Timeline() {
                                 className={`absolute top-1/2 -translate-y-1/2 h-6 z-10 shadow-sm rounded-none overflow-hidden cursor-pointer transition-all duration-200 ${getEventBarClasses(event)} ${isDimmed ? 'opacity-20 grayscale' : 'hover:brightness-95 hover:shadow-md'}`}
                                 style={{ left: leftStyle, width: widthStyle }}
                                 title={getTooltip()}
-                                onMouseEnter={() => { if (seriesName) setHoveredSeries(seriesName); }}
-                                onMouseLeave={() => setHoveredSeries(null)}
+                                onMouseEnter={() => {
+                                  if (seriesName) setHoveredSeries(seriesName);
+                                  if (bookingId) setHoveredBookingId(bookingId);
+                                }}
+                                onMouseLeave={() => { setHoveredSeries(null); setHoveredBookingId(null); }}
                                 onDoubleClick={(e) => {
                                   e.stopPropagation();
                                   if (event.type === "tour") {
