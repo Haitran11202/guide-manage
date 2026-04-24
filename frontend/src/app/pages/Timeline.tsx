@@ -302,6 +302,7 @@ export function Timeline() {
   const [draftFilterDateFrom, setDraftFilterDateFrom] = useState(defaultMonthRange.from);
   const [draftFilterDateTo, setDraftFilterDateTo] = useState(defaultMonthRange.to);
   const [filterSeries, setFilterSeries] = useState<"all" | "series" | "noseries">("all");
+  const [filterSeriesName, setFilterSeriesName] = useState("");
   const [countryOptions, setCountryOptions] = useState<CountryOption[]>([]);
 
   const [modalSearchTerm, setModalSearchTerm] = useState("");
@@ -319,6 +320,7 @@ export function Timeline() {
   const debouncedFilterSearch = useDebouncedValue(filterSearch, 300);
   const debouncedFilterClient = useDebouncedValue(filterClient, 300);
   const debouncedFilterGuide = useDebouncedValue(filterGuide, 300);
+  const debouncedFilterSeriesName = useDebouncedValue(filterSeriesName, 300);
 
   const [hoveredSeries, setHoveredSeries] = useState<string | null>(null);
   const [hoveredBookingId, setHoveredBookingId] = useState<string | null>(null);
@@ -574,12 +576,18 @@ export function Timeline() {
     return Array.from(clients).sort();
   }, [bookingsData]);
 
+  const filteredBookingsData = useMemo(() => {
+    if (!filterSeriesName.trim()) return bookingsData;
+    const term = filterSeriesName.trim().toLowerCase();
+    return bookingsData.filter((b) => b.series.toLowerCase().includes(term));
+  }, [bookingsData, filterSeriesName]);
+
   const guidesWithTours = useMemo(() => {
     return guidesData.map((g) => {
-      const activeTours = bookingsData.filter((b) => b.assignedGuides.includes(g.name));
+      const activeTours = filteredBookingsData.filter((b) => b.assignedGuides.includes(g.name));
       return { ...g, tours: activeTours };
     });
-  }, [guidesData, bookingsData]);
+  }, [guidesData, filteredBookingsData]);
 
   useEffect(() => {
     let active = true;
@@ -1909,6 +1917,7 @@ export function Timeline() {
                 <div className="flex items-center gap-2 text-[10px] font-bold text-[#1D3663]/65 uppercase tracking-widest mr-2"><Filter className="w-3 h-3" /> Filters:</div>
                 <input type="text" placeholder="Guide Name..." value={filterGuide} onChange={(e) => { setFilterGuide(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-3 py-1.5 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none w-32" />
                 <input type="text" placeholder="Ref or Group..." value={filterSearch} onChange={(e) => { setFilterSearch(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-3 py-1.5 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none w-32" />
+                <input type="text" placeholder="Series..." value={filterSeriesName} onChange={(e) => { setFilterSeriesName(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-3 py-1.5 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none w-32" />
 
                 <input type="text" list="timeline-clients" placeholder="Client..." value={filterClient} onChange={(e) => { setFilterClient(e.target.value); setGuidePage(1); }} className="bg-[#C4E8FF]/10 border border-[#C4E8FF] rounded-lg px-3 py-1.5 text-xs text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none w-32" />
                 <datalist id="timeline-clients">
@@ -1961,13 +1970,14 @@ export function Timeline() {
                   <label className="text-[10px] font-bold text-[#1D3663] flex items-center gap-1 cursor-pointer"><input type="radio" name="timelineSeries" value="noseries" checked={filterSeries === 'noseries'} onChange={() => { setFilterSeries('noseries'); setGuidePage(1) }} /> No Series</label>
                 </div>
 
-                {(selectedCountryXid || filterGuide || filterSearch || filterClient || filterDateFrom || filterDateTo || filterSeries !== "all") && (
+                {(selectedCountryXid || filterGuide || filterSearch || filterSeriesName || filterClient || filterDateFrom || filterDateTo || filterSeries !== "all") && (
                   <button onClick={() => {
                     const defaultCountry = countryOptions.find(
                       (country) => country.name.trim().toLowerCase() === DEFAULT_COUNTRY_NAME.toLowerCase(),
                     );
                     setFilterGuide("");
                     setFilterSearch("");
+                    setFilterSeriesName("");
                     setFilterClient("");
                     setSelectedCountryXid(defaultCountry ? String(defaultCountry.xid) : "");
                     setFilterDateFrom(defaultMonthRange.from);
