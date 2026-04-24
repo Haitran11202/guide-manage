@@ -2174,7 +2174,29 @@ export function Timeline() {
                       pushMergedBlock(blockStart, previousDate);
                     });
 
-                    guide.busyDates.forEach((b: any) => {
+                    // Merge consecutive busy blocks into single bars
+                    const sortedBusy = [...guide.busyDates].sort(
+                      (a: any, b: any) =>
+                        new Date(`${a.from}T00:00:00`).getTime() - new Date(`${b.from}T00:00:00`).getTime(),
+                    );
+                    const mergedBusy: { from: string; to: string }[] = [];
+                    sortedBusy.forEach((b: any) => {
+                      const prev = mergedBusy[mergedBusy.length - 1];
+                      if (prev) {
+                        const prevToMs = new Date(`${prev.to}T00:00:00`).getTime();
+                        const bFromMs = new Date(`${b.from}T00:00:00`).getTime();
+                        if (bFromMs <= prevToMs + 86400000) {
+                          // Consecutive or overlapping — extend the previous block
+                          const bToMs = new Date(`${b.to}T00:00:00`).getTime();
+                          if (bToMs > prevToMs) {
+                            prev.to = b.to;
+                          }
+                          return;
+                        }
+                      }
+                      mergedBusy.push({ from: b.from, to: b.to });
+                    });
+                    mergedBusy.forEach((b) => {
                       events.push({
                         type: "busy", start: b.from, end: b.to, data: b,
                         duration: Math.round((new Date(`${b.to}T00:00:00`).getTime() - new Date(`${b.from}T00:00:00`).getTime()) / 86400000) + 1
