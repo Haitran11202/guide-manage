@@ -2345,7 +2345,9 @@ export function Timeline() {
                                 )}
                                 {event.type === "busy" && zoomLevel !== 1 && (
                                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
-                                    <span className="text-[10px] font-black text-white/80 uppercase tracking-widest px-1">X</span>
+                                    <span className="text-[10px] font-black text-white/80 uppercase tracking-widest px-1">
+                                      {event.data?.busy === "H" ? "H" : "X"}
+                                    </span>
                                   </div>
                                 )}
                               </div>
