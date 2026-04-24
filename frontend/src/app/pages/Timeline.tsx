@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   Users,
   Calendar,
+  CalendarClock,
   Plus,
   X,
   AlertCircle,
@@ -696,6 +697,9 @@ export function Timeline() {
   const [newBusyFrom, setNewBusyFrom] = useState("");
   const [newBusyTo, setNewBusyTo] = useState("");
   const [newBusyShiftCode, setNewBusyShiftCode] = useState<ShiftCode>("ALL");
+  const [newBusyResFrom, setNewBusyResFrom] = useState("");
+  const [newBusyResTo, setNewBusyResTo] = useState("");
+  const [newBusyResShiftCode, setNewBusyResShiftCode] = useState<ShiftCode>("ALL");
   const [pendingDeleteBusyId, setPendingDeleteBusyId] = useState<string | null>(null);
   const [pendingDeleteBusyGuideId, setPendingDeleteBusyGuideId] = useState<number | null>(null);
 
@@ -807,8 +811,8 @@ export function Timeline() {
   const currentCellWidth = zoomLevel === 3 ? 40 : 20;
 
   const timelineTrackStyle = useMemo(() => {
-    if (zoomLevel === 1) return { flex: 1, minWidth: "800px" };
-    if (zoomLevel === 2) return { width: "250vw", flexShrink: 0 };
+    if (zoomLevel === 1) return { flex: 1, minWidth: 0 };
+    if (zoomLevel === 2) return { flex: 1, minWidth: 0 };
     return { width: `${totalDaysInRange * currentCellWidth}px`, flexShrink: 0 };
   }, [zoomLevel, totalDaysInRange, currentCellWidth]);
 
@@ -1201,6 +1205,23 @@ export function Timeline() {
     setNewBusyFrom("");
     setNewBusyTo("");
     setNewBusyShiftCode("ALL");
+  };
+
+  const handleAddBusyReservation = async () => {
+    const targetGuide = guidesWithTours.find(g => g.id === guideDetailsModalId);
+    if (!newBusyResFrom || !newBusyResTo || !targetGuide) return;
+    const fromMs = new Date(newBusyResFrom).getTime();
+    const toMs = new Date(newBusyResTo).getTime();
+    if (fromMs > toMs) { alert("From date must be before To date."); return; }
+
+    const nextTimelineData = await runTimelineApi("Saving busy reservation...", () =>
+      mockApi.addGuideBusyReservation(guideDetailsModalId!, newBusyResFrom, newBusyResTo, newBusyResShiftCode),
+    );
+    applyTimelineData(nextTimelineData);
+
+    setNewBusyResFrom("");
+    setNewBusyResTo("");
+    setNewBusyResShiftCode("ALL");
   };
 
   const handleRemoveBusyDate = (id: string, guideId: number) => { setPendingDeleteBusyId(id); setPendingDeleteBusyGuideId(guideId); };
@@ -1998,7 +2019,7 @@ export function Timeline() {
                 </div>
               )}
               {selectedCountryXidNumber && (
-                <div className="min-w-full inline-block bg-white border-b border-[#C4E8FF]">
+                <div className={isDaily ? "min-w-max block bg-white border-b border-[#C4E8FF]" : "w-full block bg-white border-b border-[#C4E8FF]"}>
 
                   <div className="flex sticky top-0 z-[60] bg-white border-b border-[#C4E8FF] shadow-[0_2px_5px_rgba(0,0,0,0.02)]">
                     <div className="w-[260px] shrink-0 sticky left-0 z-[70] bg-white border-r border-[#C4E8FF] h-10 flex items-center px-6">
@@ -2442,7 +2463,14 @@ export function Timeline() {
           return true;
         });
 
-        const busyDatesInYear = detailsGuide.busyDates.filter((b: any) => b.from.startsWith(detailsModalYear.toString()) || b.to.startsWith(detailsModalYear.toString()));
+        const busyDatesInYear = detailsGuide.busyDates.filter((b: any) =>
+          (b.from.startsWith(detailsModalYear.toString()) || b.to.startsWith(detailsModalYear.toString())) &&
+          b.busy !== "H"
+        );
+        const busyResInYear = detailsGuide.busyDates.filter((b: any) =>
+          (b.from.startsWith(detailsModalYear.toString()) || b.to.startsWith(detailsModalYear.toString())) &&
+          b.busy === "H"
+        );
 
         return (
           <div className="fixed inset-0 z-[120] bg-white flex flex-col animate-in fade-in">
@@ -2561,70 +2589,105 @@ export function Timeline() {
                 </div>
               </div>
 
-              {/* RIGHT PANE: Busy Dates Management */}
-              <div className="w-[65%] flex flex-col bg-gray-50/50">
-                {/* Enforced equal header heights */}
-                <div className="p-6 shrink-0 border-b border-[#C4E8FF]/50 bg-white h-[176px] flex flex-col justify-between">
-                  <h4 className="text-sm font-black text-[#1D3663] uppercase tracking-wide flex items-center gap-2"><Calendar className="w-4 h-4 text-red-500" /> Busy Dates Management</h4>
-                  <div className="bg-red-50/50 border border-red-100 rounded-2xl p-4">
-                    <label className="text-[9px] font-black text-red-800/60 uppercase tracking-widest mb-2 block">Add New Busy Period</label>
-                    <div className="flex items-end gap-3">
-                      <div className="flex-1 space-y-1">
-                        <span className="text-[10px] font-bold text-[#1D3663]/70">From</span>
-                        <input type="date" value={newBusyFrom} onChange={(e) => setNewBusyFrom(e.target.value)} className="w-full text-xs bg-white border border-[#C4E8FF] rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none" />
+              {/* RIGHT PANE: Busy Dates Management + Busy Reservation */}
+              <div className="w-[65%] flex flex-col bg-gray-50/50 min-h-0">
+
+                {/* TOP: Busy Dates Management */}
+                <div className="flex-1 flex flex-col min-h-0 border-b-2 border-[#C4E8FF]">
+                  <div className="p-5 shrink-0 border-b border-[#C4E8FF]/50 bg-white flex flex-col justify-between">
+                    <h4 className="text-sm font-black text-[#1D3663] uppercase tracking-wide flex items-center gap-2 mb-3"><Calendar className="w-4 h-4 text-red-500" /> Busy Dates Management</h4>
+                    <div className="bg-red-50/50 border border-red-100 rounded-2xl p-4">
+                      <label className="text-[9px] font-black text-red-800/60 uppercase tracking-widest mb-2 block">Add New Busy Period</label>
+                      <div className="flex items-end gap-3">
+                        <div className="flex-1 space-y-1">
+                          <span className="text-[10px] font-bold text-[#1D3663]/70">From</span>
+                          <input type="date" value={newBusyFrom} onChange={(e) => setNewBusyFrom(e.target.value)} className="w-full text-xs bg-white border border-[#C4E8FF] rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none" />
+                        </div>
+                        <div className="flex-1 space-y-1">
+                          <span className="text-[10px] font-bold text-[#1D3663]/70">To</span>
+                          <input type="date" value={newBusyTo} onChange={(e) => setNewBusyTo(e.target.value)} className="w-full text-xs bg-white border border-[#C4E8FF] rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none" />
+                        </div>
+                        <div className="w-32 space-y-1">
+                          <span className="text-[10px] font-bold text-[#1D3663]/70">Shift</span>
+                          <select value={newBusyShiftCode} onChange={(e) => setNewBusyShiftCode(e.target.value as ShiftCode)} className="w-full text-xs bg-white border border-[#C4E8FF] rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none">
+                            {SHIFT_OPTIONS.map((option) => (<option key={option.value} value={option.value}>{option.value}</option>))}
+                          </select>
+                        </div>
+                        <button onClick={handleAddBusyDate} className="bg-[#1D3663] text-white px-6 py-2.5 rounded-xl text-xs font-bold shadow-md hover:brightness-95 transition-all h-[38px]">Add Block</button>
                       </div>
-                      <div className="flex-1 space-y-1">
-                        <span className="text-[10px] font-bold text-[#1D3663]/70">To</span>
-                        <input type="date" value={newBusyTo} onChange={(e) => setNewBusyTo(e.target.value)} className="w-full text-xs bg-white border border-[#C4E8FF] rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none" />
-                      </div>
-                      <div className="w-32 space-y-1">
-                        <span className="text-[10px] font-bold text-[#1D3663]/70">Shift</span>
-                        <select
-                          value={newBusyShiftCode}
-                          onChange={(e) => setNewBusyShiftCode(e.target.value as ShiftCode)}
-                          className="w-full text-xs bg-white border border-[#C4E8FF] rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-[#F3796A] outline-none"
-                        >
-                          {SHIFT_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.value}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <button onClick={handleAddBusyDate} className="bg-[#1D3663] text-white px-6 py-2.5 rounded-xl text-xs font-bold shadow-md hover:brightness-95 transition-all h-[38px]">
-                        Add Block
-                      </button>
                     </div>
+                  </div>
+                  <div className="flex items-center justify-between bg-gray-100/80 px-6 py-2 border-b border-gray-200 shrink-0">
+                    <label className="text-[10px] font-black text-[#1D3663]/55 uppercase tracking-widest">Blocks recorded in {detailsModalYear}</label>
+                    <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-md">{busyDatesInYear.length} Blocks</span>
+                  </div>
+                  <div className="flex-1 overflow-auto p-4 px-6 space-y-2.5">
+                    {busyDatesInYear.length === 0 ? (
+                      <div className="text-center py-8 text-[#1D3663]/45 font-bold italic text-sm">No busy dates recorded for this year.</div>
+                    ) : (
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 pb-4">
+                        {busyDatesInYear.map((b: any) => (
+                          <div key={b.id} className="flex items-center justify-between bg-purple-50/50 px-4 py-3 rounded-2xl border border-purple-200 shadow-sm hover:shadow transition-shadow">
+                            <div className="flex items-center gap-3">
+                              <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                              <span className="text-xs font-black text-purple-700">{b.from} <span className="text-purple-400 mx-1">-</span> {b.to}</span>
+                            </div>
+                            <button onClick={() => handleRemoveBusyDate(b.id, detailsGuide.id)} className="text-purple-500 hover:bg-purple-200 p-2 rounded-xl transition-colors" title="Remove block"><X className="w-4 h-4" /></button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* MOVED HEADER: Pulled outside of the scrollable section to prevent any scrolling overlapping issues */}
-                <div className="flex items-center justify-between bg-gray-100/80 px-6 py-2.5 border-b border-gray-200 shrink-0">
-                  <label className="text-[10px] font-black text-[#1D3663]/55 uppercase tracking-widest">Blocks recorded in {detailsModalYear}</label>
-                  <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-md">{busyDatesInYear.length} Blocks</span>
+                {/* BOTTOM: Busy Reservation */}
+                <div className="flex-1 flex flex-col min-h-0">
+                  <div className="p-5 shrink-0 border-b border-[#C4E8FF]/50 bg-white flex flex-col justify-between">
+                    <h4 className="text-sm font-black text-[#1D3663] uppercase tracking-wide flex items-center gap-2 mb-3"><CalendarClock className="w-4 h-4 text-amber-500" /> Busy Reservation</h4>
+                    <div className="bg-amber-50/50 border border-amber-100 rounded-2xl p-4">
+                      <label className="text-[9px] font-black text-amber-800/60 uppercase tracking-widest mb-2 block">Add New Reservation Block</label>
+                      <div className="flex items-end gap-3">
+                        <div className="flex-1 space-y-1">
+                          <span className="text-[10px] font-bold text-[#1D3663]/70">From</span>
+                          <input type="date" value={newBusyResFrom} onChange={(e) => setNewBusyResFrom(e.target.value)} className="w-full text-xs bg-white border border-amber-200 rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-amber-400 outline-none" />
+                        </div>
+                        <div className="flex-1 space-y-1">
+                          <span className="text-[10px] font-bold text-[#1D3663]/70">To</span>
+                          <input type="date" value={newBusyResTo} onChange={(e) => setNewBusyResTo(e.target.value)} className="w-full text-xs bg-white border border-amber-200 rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-amber-400 outline-none" />
+                        </div>
+                        <div className="w-32 space-y-1">
+                          <span className="text-[10px] font-bold text-[#1D3663]/70">Shift</span>
+                          <select value={newBusyResShiftCode} onChange={(e) => setNewBusyResShiftCode(e.target.value as ShiftCode)} className="w-full text-xs bg-white border border-amber-200 rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-amber-400 outline-none">
+                            {SHIFT_OPTIONS.map((option) => (<option key={option.value} value={option.value}>{option.value}</option>))}
+                          </select>
+                        </div>
+                        <button onClick={handleAddBusyReservation} className="bg-amber-500 text-white px-6 py-2.5 rounded-xl text-xs font-bold shadow-md hover:brightness-95 transition-all h-[38px]">Add Block</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between bg-amber-50/80 px-6 py-2 border-b border-amber-100 shrink-0">
+                    <label className="text-[10px] font-black text-amber-800/55 uppercase tracking-widest">Reservations in {detailsModalYear}</label>
+                    <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md">{busyResInYear.length} Blocks</span>
+                  </div>
+                  <div className="flex-1 overflow-auto p-4 px-6 space-y-2.5">
+                    {busyResInYear.length === 0 ? (
+                      <div className="text-center py-8 text-[#1D3663]/45 font-bold italic text-sm">No reservation blocks recorded for this year.</div>
+                    ) : (
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 pb-4">
+                        {busyResInYear.map((b: any) => (
+                          <div key={b.id} className="flex items-center justify-between bg-amber-50/50 px-4 py-3 rounded-2xl border border-amber-200 shadow-sm hover:shadow transition-shadow">
+                            <div className="flex items-center gap-3">
+                              <div className="w-2 h-2 rounded-full bg-amber-500"></div>
+                              <span className="text-xs font-black text-amber-700">{b.from} <span className="text-amber-400 mx-1">-</span> {b.to}</span>
+                            </div>
+                            <button onClick={() => handleRemoveBusyDate(b.id, detailsGuide.id)} className="text-amber-500 hover:bg-amber-200 p-2 rounded-xl transition-colors" title="Remove block"><X className="w-4 h-4" /></button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div className="flex-1 overflow-auto p-6 pt-4 space-y-3">
-                  {busyDatesInYear.length === 0 ? (
-                    <div className="text-center py-10 text-[#1D3663]/45 font-bold italic text-sm">No busy dates recorded for this year.</div>
-                  ) : (
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 pb-10">
-                      {busyDatesInYear.map((b: any) => (
-                        <div key={b.id} className="flex items-center justify-between bg-purple-50/50 px-4 py-3 rounded-2xl border border-purple-200 shadow-sm hover:shadow transition-shadow">
-                          <div className="flex items-center gap-3">
-                            <div className="w-2 h-2 rounded-full bg-purple-500"></div>
-                            <span className="text-xs font-black text-purple-700">
-                              {b.from} <span className="text-purple-400 mx-1">-</span> {b.to}
-                            </span>
-                          </div>
-                          <button onClick={() => handleRemoveBusyDate(b.id, detailsGuide.id)} className="text-purple-500 hover:bg-purple-200 p-2 rounded-xl transition-colors" title="Remove block">
-                            <X className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
               </div>
 
             </div>

@@ -115,6 +115,7 @@ type ApiBusyDate = {
   id: string;
   from?: string | null;
   to?: string | null;
+  busy?: string | null;
 };
 
 type ApiAssignGuideToServiceResponse = {
@@ -524,6 +525,7 @@ const mapTimelineData = (data: ApiTimelineData): TimelineData => ({
       id: busyDate.id,
       from: busyDate.from ?? "",
       to: busyDate.to ?? "",
+      busy: busyDate.busy ?? undefined,
     })),
     timeExceptions: (guide.timeExceptions ?? []).map((exception) => ({
       id: exception.id,
@@ -584,6 +586,7 @@ const mapBookingsData = (data: ApiBookingsData): TimelineData => ({
       id: busyDate.id,
       from: busyDate.from ?? "",
       to: busyDate.to ?? "",
+      busy: busyDate.busy ?? undefined,
     })),
     timeExceptions: (guide.timeExceptions ?? []).map((exception) => ({
       id: exception.id,
@@ -925,6 +928,15 @@ export const mockApi = {
     });
     return mapTimelineData(timeline);
   },
+
+  async addGuideBusyReservation(guideId: number, from: string, to: string, shift: ShiftCode): Promise<TimelineData> {
+    const timeline = await request<ApiTimelineData>("/api/timeline/guide-busy-dates", {
+      method: "POST",
+      body: JSON.stringify({ guideId, from, to, shift, busy: "H" }),
+    });
+    return mapTimelineData(timeline);
+  },
+
 
   async removeGuideBusyDate(guideId: number, busyDateId: string): Promise<TimelineData> {
     const timeline = await request<ApiTimelineData>(`/api/timeline/guide-busy-dates/${guideId}/${busyDateId}`, {

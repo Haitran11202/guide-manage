@@ -340,6 +340,7 @@ public sealed class TimelineRepository(
         var toDate = request.From.Value <= request.To.Value ? request.To.Value : request.From.Value;
         var shift = NormalizeShiftCode(request.Shift);
         var shiftCodes = ExpandShiftCodes(shift).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var busyCode = NormalizeBusyCode(request.Busy);
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
@@ -361,6 +362,7 @@ public sealed class TimelineRepository(
                 fromDate,
                 toDate,
                 shiftCodes,
+                busyCode,
                 cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
@@ -955,6 +957,12 @@ public sealed class TimelineRepository(
         return SupportedShiftCodes.Contains(normalized) ? normalized : AllDayShiftCode;
     }
 
+    private static string NormalizeBusyCode(string? busy)
+    {
+        var normalized = (busy ?? string.Empty).Trim().ToUpperInvariant();
+        return normalized.Length > 0 ? normalized[..1] : "B";
+    }
+
     private static IReadOnlyList<string> ExpandShiftCodes(string shift)
         => string.Equals(shift, AllDayShiftCode, StringComparison.OrdinalIgnoreCase)
             ? ConcreteShiftCodes
@@ -1228,7 +1236,7 @@ public sealed class TimelineRepository(
             .ToDictionary(
                 group => group.Key,
                 group => (IReadOnlyList<BusyDateDto>)group
-                    .GroupBy(row => DateOnly.FromDateTime(row.Date))
+                    .GroupBy(row => (Date: DateOnly.FromDateTime(row.Date), Busy: (row.Busy ?? string.Empty).Trim().ToUpperInvariant()))
                     .Select(dateGroup =>
                     {
                         var row = dateGroup.OrderBy(item => item.Pid).First();
@@ -1236,7 +1244,8 @@ public sealed class TimelineRepository(
                         {
                             Id = $"busy-{row.Pid}",
                             From = DateOnly.FromDateTime(row.Date),
-                            To = DateOnly.FromDateTime(row.Date)
+                            To = DateOnly.FromDateTime(row.Date),
+                            Busy = (row.Busy ?? string.Empty).Trim().ToUpperInvariant()
                         };
                     })
                     .ToArray());
@@ -1406,6 +1415,7 @@ public sealed class TimelineRepository(
         DateOnly fromDate,
         DateOnly toDate,
         IReadOnlyList<string> shiftCodes,
+        string busyCode,
         CancellationToken cancellationToken)
     {
         if (shiftCodes.Count == 0)
@@ -1441,7 +1451,7 @@ public sealed class TimelineRepository(
                 @GuideId,
                 dateRange.BusyDate,
                 shiftRange.ShiftCode,
-                'B',
+                @BusyCode,
                 NULL
             FROM DateRange dateRange
             CROSS JOIN ShiftRange shiftRange
@@ -1453,6 +1463,7 @@ public sealed class TimelineRepository(
         command.Parameters.Add("@GuideId", System.Data.SqlDbType.Int).Value = guideId;
         command.Parameters.Add("@FromDate", System.Data.SqlDbType.Date).Value = fromDate.ToDateTime(TimeOnly.MinValue).Date;
         command.Parameters.Add("@ToDate", System.Data.SqlDbType.Date).Value = toDate.ToDateTime(TimeOnly.MinValue).Date;
+        command.Parameters.Add("@BusyCode", System.Data.SqlDbType.Char, 1).Value = busyCode;
 
         for (var index = 0; index < shiftCodes.Count; index += 1)
         {
@@ -1556,7 +1567,7 @@ public sealed class TimelineRepository(
         }
 
         var normalized = (flag ?? string.Empty).Trim().ToUpperInvariant();
-        return normalized is "Y" or "1" or "T" or "B";
+        return normalized is "Y" or "1" or "T" or "B" or "H";
     }
 
     private static bool MatchesBookingFilters(

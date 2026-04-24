@@ -6,6 +6,7 @@ export type BusyDate = {
   id: string;
   from: string;
   to: string;
+  busy?: string;
 };
 
 export type GuideLanguage = {
