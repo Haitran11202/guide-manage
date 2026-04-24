@@ -740,7 +740,11 @@ export function Timeline() {
   const isCancelledEvent = (event: any) => event.type === "tour" && event.data?.status?.toLowerCase() === "cancelled";
 
   const getEventBarClasses = (event: any) => {
-    if (event.type === "busy") return "bg-violet-500 border border-slate-600 text-white";
+    if (event.type === "busy") {
+      return event.data?.busy === "H"
+        ? "bg-amber-400 border border-amber-600 text-white"
+        : "bg-violet-500 border border-slate-600 text-white";
+    }
     if (isCancelledEvent(event)) return "bg-white border border-[#1D3663]/20";
     const resStatus = (event.data?.status ?? "").toLowerCase();
     if (resStatus === "confirmed" || resStatus === "paid" || resStatus === "book" || resStatus === "booked") {
@@ -2205,15 +2209,17 @@ export function Timeline() {
                       pushMergedBlock(blockStart, previousDate);
                     });
 
-                    // Merge consecutive busy blocks into single bars
+                    // Merge consecutive busy blocks into single bars — grouped by busy type
                     const sortedBusy = [...guide.busyDates].sort(
                       (a: any, b: any) =>
                         new Date(`${a.from}T00:00:00`).getTime() - new Date(`${b.from}T00:00:00`).getTime(),
                     );
-                    const mergedBusy: { from: string; to: string }[] = [];
+                    const mergedBusy: { from: string; to: string; busy?: string }[] = [];
                     sortedBusy.forEach((b: any) => {
+                      const busyType = b.busy ?? "B";
+                      // Only merge with previous block if same busy type AND consecutive
                       const prev = mergedBusy[mergedBusy.length - 1];
-                      if (prev) {
+                      if (prev && prev.busy === busyType) {
                         const prevToMs = new Date(`${prev.to}T00:00:00`).getTime();
                         const bFromMs = new Date(`${b.from}T00:00:00`).getTime();
                         if (bFromMs <= prevToMs + 86400000) {
@@ -2225,7 +2231,7 @@ export function Timeline() {
                           return;
                         }
                       }
-                      mergedBusy.push({ from: b.from, to: b.to });
+                      mergedBusy.push({ from: b.from, to: b.to, busy: busyType });
                     });
                     mergedBusy.forEach((b) => {
                       events.push({
