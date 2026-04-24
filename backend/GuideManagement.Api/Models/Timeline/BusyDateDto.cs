@@ -6,4 +6,5 @@ public sealed class BusyDateDto
     public DateOnly? From { get; init; }
     public DateOnly? To { get; init; }
     public string? Busy { get; init; }
+    public string? Comment { get; init; }
 }

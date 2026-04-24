@@ -7,6 +7,7 @@ export type BusyDate = {
   from: string;
   to: string;
   busy?: string;
+  comment?: string;
 };
 
 export type GuideLanguage = {

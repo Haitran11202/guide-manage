@@ -116,6 +116,7 @@ type ApiBusyDate = {
   from?: string | null;
   to?: string | null;
   busy?: string | null;
+  comment?: string | null;
 };
 
 type ApiAssignGuideToServiceResponse = {
@@ -386,6 +387,8 @@ const parseAppearanceTags = (value: string) =>
 
 const buildApiUrl = (path: string) => {
   const baseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim();
+  console.log(baseUrl);
+  
   if (!baseUrl) return path;
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 };
@@ -526,6 +529,7 @@ const mapTimelineData = (data: ApiTimelineData): TimelineData => ({
       from: busyDate.from ?? "",
       to: busyDate.to ?? "",
       busy: busyDate.busy ?? undefined,
+      comment: busyDate.comment ?? undefined,
     })),
     timeExceptions: (guide.timeExceptions ?? []).map((exception) => ({
       id: exception.id,
@@ -587,6 +591,7 @@ const mapBookingsData = (data: ApiBookingsData): TimelineData => ({
       from: busyDate.from ?? "",
       to: busyDate.to ?? "",
       busy: busyDate.busy ?? undefined,
+      comment: busyDate.comment ?? undefined,
     })),
     timeExceptions: (guide.timeExceptions ?? []).map((exception) => ({
       id: exception.id,
@@ -929,10 +934,10 @@ export const mockApi = {
     return mapTimelineData(timeline);
   },
 
-  async addGuideBusyReservation(guideId: number, from: string, to: string, shift: ShiftCode): Promise<TimelineData> {
+  async addGuideBusyReservation(guideId: number, from: string, to: string, shift: ShiftCode, comment?: string): Promise<TimelineData> {
     const timeline = await request<ApiTimelineData>("/api/timeline/guide-busy-dates", {
       method: "POST",
-      body: JSON.stringify({ guideId, from, to, shift, busy: "H" }),
+      body: JSON.stringify({ guideId, from, to, shift, busy: "H", comment }),
     });
     return mapTimelineData(timeline);
   },

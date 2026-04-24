@@ -363,6 +363,7 @@ public sealed class TimelineRepository(
                 toDate,
                 shiftCodes,
                 busyCode,
+                request.Comment,
                 cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
@@ -1222,7 +1223,8 @@ public sealed class TimelineRepository(
                 gb.SupplierGuideXid AS GuideId,
                 gb.[Date],
                 gb.Busy,
-                gb.ResHolidayXid
+                gb.ResHolidayXid,
+                gb.Comment
             FROM dbo.M_GuideBusy gb;
             """;
 
@@ -1245,7 +1247,8 @@ public sealed class TimelineRepository(
                             Id = $"busy-{row.Pid}",
                             From = DateOnly.FromDateTime(row.Date),
                             To = DateOnly.FromDateTime(row.Date),
-                            Busy = (row.Busy ?? string.Empty).Trim().ToUpperInvariant()
+                            Busy = (row.Busy ?? string.Empty).Trim().ToUpperInvariant(),
+                            Comment = row.Comment
                         };
                     })
                     .ToArray());
@@ -1416,6 +1419,7 @@ public sealed class TimelineRepository(
         DateOnly toDate,
         IReadOnlyList<string> shiftCodes,
         string busyCode,
+        string? comment,
         CancellationToken cancellationToken)
     {
         if (shiftCodes.Count == 0)
@@ -1445,14 +1449,16 @@ public sealed class TimelineRepository(
                 [Date],
                 {shiftColumnSql},
                 Busy,
-                ResHolidayXid
+                ResHolidayXid,
+                Comment
             )
             SELECT
                 @GuideId,
                 dateRange.BusyDate,
                 shiftRange.ShiftCode,
                 @BusyCode,
-                NULL
+                NULL,
+                @Comment
             FROM DateRange dateRange
             CROSS JOIN ShiftRange shiftRange
             OPTION (MAXRECURSION 0);
@@ -1464,6 +1470,7 @@ public sealed class TimelineRepository(
         command.Parameters.Add("@FromDate", System.Data.SqlDbType.Date).Value = fromDate.ToDateTime(TimeOnly.MinValue).Date;
         command.Parameters.Add("@ToDate", System.Data.SqlDbType.Date).Value = toDate.ToDateTime(TimeOnly.MinValue).Date;
         command.Parameters.Add("@BusyCode", System.Data.SqlDbType.Char, 1).Value = busyCode;
+        command.Parameters.Add("@Comment", System.Data.SqlDbType.NVarChar, 500).Value = (object?)comment ?? DBNull.Value;
 
         for (var index = 0; index < shiftCodes.Count; index += 1)
         {
@@ -1663,7 +1670,7 @@ public sealed class TimelineRepository(
         public DateOnly? MessageDate => SendSMSDate is null ? null : DateOnly.FromDateTime(SendSMSDate.Value);
     }
 
-    private sealed record BusyDateRow(int Pid, int GuideId, DateTime Date, string? Busy, int? ResHolidayXid);
+    private sealed record BusyDateRow(int Pid, int GuideId, DateTime Date, string? Busy, int? ResHolidayXid, string? Comment);
 
     private sealed record BusyDateDeleteTargetRow(DateTime BusyDate, int? ResHolidayXid);
 

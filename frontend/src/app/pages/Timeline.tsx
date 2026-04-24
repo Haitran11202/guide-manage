@@ -700,6 +700,7 @@ export function Timeline() {
   const [newBusyResFrom, setNewBusyResFrom] = useState("");
   const [newBusyResTo, setNewBusyResTo] = useState("");
   const [newBusyResShiftCode, setNewBusyResShiftCode] = useState<ShiftCode>("ALL");
+  const [newBusyResComment, setNewBusyResComment] = useState("");
   const [pendingDeleteBusyId, setPendingDeleteBusyId] = useState<string | null>(null);
   const [pendingDeleteBusyGuideId, setPendingDeleteBusyGuideId] = useState<number | null>(null);
 
@@ -1219,13 +1220,14 @@ export function Timeline() {
     if (fromMs > toMs) { alert("From date must be before To date."); return; }
 
     const nextTimelineData = await runTimelineApi("Saving busy reservation...", () =>
-      mockApi.addGuideBusyReservation(guideDetailsModalId!, newBusyResFrom, newBusyResTo, newBusyResShiftCode),
+      mockApi.addGuideBusyReservation(guideDetailsModalId!, newBusyResFrom, newBusyResTo, newBusyResShiftCode, newBusyResComment),
     );
     applyTimelineData(nextTimelineData);
 
     setNewBusyResFrom("");
     setNewBusyResTo("");
     setNewBusyResShiftCode("ALL");
+    setNewBusyResComment("");
   };
 
   const handleRemoveBusyDate = (id: string, guideId: number) => { setPendingDeleteBusyId(id); setPendingDeleteBusyGuideId(guideId); };
@@ -2209,29 +2211,38 @@ export function Timeline() {
                       pushMergedBlock(blockStart, previousDate);
                     });
 
-                    // Merge consecutive busy blocks into single bars — grouped by busy type
-                    const sortedBusy = [...guide.busyDates].sort(
-                      (a: any, b: any) =>
-                        new Date(`${a.from}T00:00:00`).getTime() - new Date(`${b.from}T00:00:00`).getTime(),
-                    );
-                    const mergedBusy: { from: string; to: string; busy?: string }[] = [];
-                    sortedBusy.forEach((b: any) => {
-                      const busyType = b.busy ?? "B";
-                      // Only merge with previous block if same busy type AND consecutive
-                      const prev = mergedBusy[mergedBusy.length - 1];
-                      if (prev && prev.busy === busyType) {
-                        const prevToMs = new Date(`${prev.to}T00:00:00`).getTime();
-                        const bFromMs = new Date(`${b.from}T00:00:00`).getTime();
-                        if (bFromMs <= prevToMs + 86400000) {
-                          // Consecutive or overlapping — extend the previous block
-                          const bToMs = new Date(`${b.to}T00:00:00`).getTime();
-                          if (bToMs > prevToMs) {
-                            prev.to = b.to;
+
+                    // Merge consecutive busy blocks per busy type independently
+                    const mergedBusy: { from: string; to: string; busy: string; comment?: string }[] = [];
+                    const busyByType = new Map<string, { from: string; to: string; comment?: string }[]>();
+                    guide.busyDates.forEach((b: any) => {
+                      const busyType: string = b.busy ?? "B";
+                      if (!busyByType.has(busyType)) busyByType.set(busyType, []);
+                      busyByType.get(busyType)!.push(b);
+                    });
+                    busyByType.forEach((entries, busyType) => {
+                      const sorted = entries.slice().sort(
+                        (a: any, b: any) =>
+                          new Date(`${a.from}T00:00:00`).getTime() - new Date(`${b.from}T00:00:00`).getTime(),
+                      );
+                      const merged: { from: string; to: string; busy: string; comment?: string }[] = [];
+                      sorted.forEach((b: any) => {
+                        const prev = merged[merged.length - 1];
+                        if (prev) {
+                          const prevToMs = new Date(`${prev.to}T00:00:00`).getTime();
+                          const bFromMs = new Date(`${b.from}T00:00:00`).getTime();
+                          if (bFromMs <= prevToMs + 86400000) {
+                            const bToMs = new Date(`${b.to}T00:00:00`).getTime();
+                            if (bToMs > prevToMs) prev.to = b.to;
+                            if (b.comment && !prev.comment?.includes(b.comment)) {
+                              prev.comment = prev.comment ? `${prev.comment} | ${b.comment}` : b.comment;
+                            }
+                            return;
                           }
-                          return;
                         }
-                      }
-                      mergedBusy.push({ from: b.from, to: b.to, busy: busyType });
+                        merged.push({ from: b.from, to: b.to, busy: busyType, comment: b.comment });
+                      });
+                      mergedBusy.push(...merged);
                     });
                     mergedBusy.forEach((b) => {
                       events.push({
@@ -2297,7 +2308,7 @@ export function Timeline() {
                               (hoveredBookingId && event.type === "tour" && bookingId !== hoveredBookingId);
 
                             const getTooltip = () => {
-                              if (event.type === "busy") return "Busy";
+                              if (event.type === "busy") return event.data?.comment ? `Busy: ${event.data.comment}` : "Busy";
                               const { client, ref, status, country } = event.data;
                               return `${client} - ${ref} (${status})\nCountry: ${country || 'N/A'}`;
                             };
@@ -2596,7 +2607,7 @@ export function Timeline() {
               </div>
 
               {/* RIGHT PANE: Busy Dates Management + Busy Reservation */}
-              <div className="w-[65%] flex flex-col bg-gray-50/50 min-h-0">
+              <div className="w-[65%] flex flex-row bg-gray-50/50 min-h-0">
 
                 {/* TOP: Busy Dates Management */}
                 <div className="flex-1 flex flex-col min-h-0 border-b-2 border-[#C4E8FF]">
@@ -2652,22 +2663,30 @@ export function Timeline() {
                     <h4 className="text-sm font-black text-[#1D3663] uppercase tracking-wide flex items-center gap-2 mb-3"><CalendarClock className="w-4 h-4 text-amber-500" /> Busy Reservation</h4>
                     <div className="bg-amber-50/50 border border-amber-100 rounded-2xl p-4">
                       <label className="text-[9px] font-black text-amber-800/60 uppercase tracking-widest mb-2 block">Add New Reservation Block</label>
-                      <div className="flex items-end gap-3">
-                        <div className="flex-1 space-y-1">
-                          <span className="text-[10px] font-bold text-[#1D3663]/70">From</span>
-                          <input type="date" value={newBusyResFrom} onChange={(e) => setNewBusyResFrom(e.target.value)} className="w-full text-xs bg-white border border-amber-200 rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-amber-400 outline-none" />
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-end gap-3">
+                          <div className="flex-1 space-y-1">
+                            <span className="text-[10px] font-bold text-[#1D3663]/70">From</span>
+                            <input type="date" value={newBusyResFrom} onChange={(e) => setNewBusyResFrom(e.target.value)} className="w-full text-xs bg-white border border-amber-200 rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-amber-400 outline-none" />
+                          </div>
+                          <div className="flex-1 space-y-1">
+                            <span className="text-[10px] font-bold text-[#1D3663]/70">To</span>
+                            <input type="date" value={newBusyResTo} onChange={(e) => setNewBusyResTo(e.target.value)} className="w-full text-xs bg-white border border-amber-200 rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-amber-400 outline-none" />
+                          </div>
+                          <div className="w-32 space-y-1">
+                            <span className="text-[10px] font-bold text-[#1D3663]/70">Shift</span>
+                            <select value={newBusyResShiftCode} onChange={(e) => setNewBusyResShiftCode(e.target.value as ShiftCode)} className="w-full text-xs bg-white border border-amber-200 rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-amber-400 outline-none">
+                              {SHIFT_OPTIONS.map((option) => (<option key={option.value} value={option.value}>{option.value}</option>))}
+                            </select>
+                          </div>
                         </div>
-                        <div className="flex-1 space-y-1">
-                          <span className="text-[10px] font-bold text-[#1D3663]/70">To</span>
-                          <input type="date" value={newBusyResTo} onChange={(e) => setNewBusyResTo(e.target.value)} className="w-full text-xs bg-white border border-amber-200 rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-amber-400 outline-none" />
+                        <div className="flex items-end gap-3">
+                          <div className="flex-1 space-y-1">
+                            <span className="text-[10px] font-bold text-[#1D3663]/70">Comment</span>
+                            <input type="text" placeholder="Add a comment..." value={newBusyResComment} onChange={(e) => setNewBusyResComment(e.target.value)} className="w-full text-xs bg-white border border-amber-200 rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-amber-400 outline-none" />
+                          </div>
+                          <button onClick={handleAddBusyReservation} className="bg-amber-500 text-white px-6 py-2.5 rounded-xl text-xs font-bold shadow-md hover:brightness-95 transition-all h-[38px]">Add Block</button>
                         </div>
-                        <div className="w-32 space-y-1">
-                          <span className="text-[10px] font-bold text-[#1D3663]/70">Shift</span>
-                          <select value={newBusyResShiftCode} onChange={(e) => setNewBusyResShiftCode(e.target.value as ShiftCode)} className="w-full text-xs bg-white border border-amber-200 rounded-xl p-2.5 text-[#1D3663] focus:ring-1 focus:ring-amber-400 outline-none">
-                            {SHIFT_OPTIONS.map((option) => (<option key={option.value} value={option.value}>{option.value}</option>))}
-                          </select>
-                        </div>
-                        <button onClick={handleAddBusyReservation} className="bg-amber-500 text-white px-6 py-2.5 rounded-xl text-xs font-bold shadow-md hover:brightness-95 transition-all h-[38px]">Add Block</button>
                       </div>
                     </div>
                   </div>
@@ -2682,9 +2701,14 @@ export function Timeline() {
                       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 pb-4">
                         {busyResInYear.map((b: any) => (
                           <div key={b.id} className="flex items-center justify-between bg-amber-50/50 px-4 py-3 rounded-2xl border border-amber-200 shadow-sm hover:shadow transition-shadow">
-                            <div className="flex items-center gap-3">
-                              <div className="w-2 h-2 rounded-full bg-amber-500"></div>
-                              <span className="text-xs font-black text-amber-700">{b.from} <span className="text-amber-400 mx-1">-</span> {b.to}</span>
+                            <div className="flex flex-col gap-1 overflow-hidden">
+                              <div className="flex items-center gap-3">
+                                <div className="w-2 h-2 rounded-full bg-amber-500 shrink-0"></div>
+                                <span className="text-xs font-black text-amber-700 whitespace-nowrap">{b.from} <span className="text-amber-400 mx-1">-</span> {b.to}</span>
+                              </div>
+                              {b.comment && (
+                                <p className="text-[10px] text-amber-900/60 font-medium pl-5 truncate" title={b.comment}>{b.comment}</p>
+                              )}
                             </div>
                             <button onClick={() => handleRemoveBusyDate(b.id, detailsGuide.id)} className="text-amber-500 hover:bg-amber-200 p-2 rounded-xl transition-colors" title="Remove block"><X className="w-4 h-4" /></button>
                           </div>

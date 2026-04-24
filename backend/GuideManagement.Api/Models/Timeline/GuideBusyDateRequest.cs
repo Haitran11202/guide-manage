@@ -7,4 +7,5 @@ public sealed class GuideBusyDateRequest
     public DateOnly? To { get; init; }
     public string? Shift { get; init; }
     public string? Busy { get; init; }
+    public string? Comment { get; init; }
 }

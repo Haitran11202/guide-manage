@@ -144,7 +144,7 @@ export function TimelineBookingAssignmentModal({
     setDownloadingDocument(downloadKey);
 
     try {
-      const BASE_URL = "https://localhost:7100/api/v1";
+      const BASE_URL = "https://n2qkvz07-7100.asse.devtunnels.ms/api/v1";
       let url: string;
       let body: object;
 
@@ -598,10 +598,10 @@ export function TimelineBookingAssignmentModal({
                                         }
                                       }}
                                       className={`rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-widest transition-all ${isShiftSelected
-                                          ? "border-[#F3796A] bg-[#F3796A] text-white"
-                                          : isShiftAvailable
-                                            ? "border-[#C4E8FF] bg-white text-[#333] hover:border-[#F3796A] hover:text-[#F3796A]"
-                                            : "border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed"
+                                        ? "border-[#F3796A] bg-[#F3796A] text-white"
+                                        : isShiftAvailable
+                                          ? "border-[#C4E8FF] bg-white text-[#333] hover:border-[#F3796A] hover:text-[#F3796A]"
+                                          : "border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed"
                                         }`}
                                     >
                                       {shiftTag.label}
